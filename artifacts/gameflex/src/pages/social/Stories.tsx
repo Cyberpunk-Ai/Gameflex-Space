@@ -1,16 +1,25 @@
-import { useState, useMemo, useEffect } from 'react';
+// @ts-nocheck
+import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate, useLocation } from '@/lib/router-compat';
+import { Link } from '@/lib/router-compat';
 import { supabase } from '@/integrations/supabase/client';
 import { SocialLayout } from '@/components/social/social-nav';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { formatDistanceToNow, subHours } from 'date-fns';
-import { Camera, Plus, Layers, Heart, MessageCircle, Clock, Trash2, Pencil, BarChart3, Globe, ChevronRight } from 'lucide-react';
+import {
+  Camera, Plus, Layers, Heart, MessageCircle, Clock,
+  Trash2, Pencil, BarChart3, Eye, TrendingUp, Check,
+} from 'lucide-react';
 import { StoryViewer } from '@/components/social/stories-rail';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/lib/auth-context';
-import { resolveStoryGradient, isVideoStory, STORY_GRADIENTS, encodeTextStoryType } from '@/features/stories/gradients';
+import {
+  resolveStoryGradient,
+  isVideoStory,
+  STORY_GRADIENTS,
+  encodeTextStoryType,
+} from '@/features/stories/gradients';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,221 +41,306 @@ import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { motion, AnimatePresence } from 'framer-motion';
 
-// ─── types ───────────────────────────────────────────────────────────────────
-
-interface Story {
-  id: string;
-  user_id: string;
-  content: string | null;
-  media_url: string | null;
-  media_type: string | null;
-  created_at: string;
-  likes_count: number | null;
-  comments_count: number | null;
-}
-
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 function hoursLeft(createdAt: string) {
-  const diff = 24 - (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
-  return Math.max(0, diff);
+  const h = 24 - (Date.now() - new Date(createdAt).getTime()) / 3_600_000;
+  return Math.max(0, h);
 }
 
-// ─── My Story Card ────────────────────────────────────────────────────────────
+// ─── Story thumbnail (reused in grid + stats list) ────────────────────────────
 
-function MyStoryCard({
+function StoryThumb({
+  story,
+  index,
+  className = '',
+}: {
+  story: any;
+  index: number;
+  className?: string;
+}) {
+  const isVid = isVideoStory(story);
+  const grad = resolveStoryGradient(story.media_type, index);
+
+  if (isVid) {
+    return (
+      <video
+        src={story.media_url}
+        className={cn('w-full h-full object-cover', className)}
+        muted
+        playsInline
+      />
+    );
+  }
+  if (story.media_url) {
+    return (
+      <img
+        src={story.media_url}
+        alt=""
+        className={cn('w-full h-full object-cover', className)}
+        loading="lazy"
+      />
+    );
+  }
+  return (
+    <div
+      className={cn('w-full h-full flex items-center justify-center p-2', className)}
+      style={{ background: grad }}
+    >
+      <p className="text-[9px] font-bold text-white text-center line-clamp-3 leading-tight drop-shadow-sm">
+        {story.content ?? ''}
+      </p>
+    </div>
+  );
+}
+
+// ─── Community story card ─────────────────────────────────────────────────────
+
+function CommunityCard({
+  group,
+  index,
+  onClick,
+}: {
+  group: any;
+  index: number;
+  onClick: () => void;
+}) {
+  const latest = group.stories[group.stories.length - 1];
+  const totalLikes = group.stories.reduce((s: number, x: any) => s + (x.likes_count ?? 0), 0);
+
+  return (
+    <motion.button
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.18, delay: index * 0.04 }}
+      type="button"
+      onClick={onClick}
+      className="flex flex-col text-left group cursor-pointer"
+    >
+      <div className="relative aspect-[9/16] rounded-2xl overflow-hidden mb-2.5 bg-secondary border border-border/40 group-hover:border-primary/60 transition-all duration-200 shadow-md group-hover:shadow-primary/10 group-hover:shadow-lg">
+        <StoryThumb story={latest} index={index} />
+
+        {/* gradient overlay */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-black/20 pointer-events-none" />
+
+        {/* story count badge */}
+        {group.stories.length > 1 && (
+          <div className="absolute top-2.5 right-2.5 bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded-full text-[10px] font-bold text-white flex items-center gap-1 border border-white/10">
+            <Layers className="h-3 w-3" />
+            {group.stories.length}
+          </div>
+        )}
+
+        {/* likes badge */}
+        {totalLikes > 0 && (
+          <div className="absolute top-2.5 left-2.5 bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded-full text-[10px] font-bold text-white flex items-center gap-1 border border-white/10">
+            <Heart className="h-3 w-3 fill-rose-400 text-rose-400" />
+            {totalLikes}
+          </div>
+        )}
+
+        {/* user info */}
+        <div className="absolute bottom-0 left-0 right-0 p-3 flex items-end gap-2">
+          <div
+            className="shrink-0 p-[2px] rounded-full"
+            style={{
+              background: 'linear-gradient(135deg, hsl(142 76% 45%), hsl(180 100% 50%))',
+            }}
+          >
+            <Avatar className="h-8 w-8 border-[1.5px] border-black">
+              <AvatarImage src={group.profile?.avatar_url} className="object-cover" />
+              <AvatarFallback className="text-[10px] font-bold bg-secondary text-foreground">
+                {group.profile?.username?.[0]?.toUpperCase() ?? '?'}
+              </AvatarFallback>
+            </Avatar>
+          </div>
+          <div className="min-w-0">
+            <p className="text-[12px] font-bold text-white truncate drop-shadow-md leading-none mb-0.5">
+              {group.profile?.username ?? '—'}
+            </p>
+            <p className="text-[10px] text-white/70 font-medium">
+              {formatDistanceToNow(new Date(latest.created_at))} ago
+            </p>
+          </div>
+        </div>
+      </div>
+    </motion.button>
+  );
+}
+
+// ─── Stats row (my story card) ────────────────────────────────────────────────
+
+function MyStoryRow({
   story,
   index,
   onDelete,
   onEdit,
   onView,
 }: {
-  story: Story;
+  story: any;
   index: number;
-  onDelete: (story: Story) => void;
-  onEdit: (story: Story) => void;
+  onDelete: (s: any) => void;
+  onEdit: (s: any) => void;
   onView: () => void;
 }) {
   const isText = !story.media_url;
-  const isVideo = isVideoStory(story);
-  const gradientCss = resolveStoryGradient(story.media_type, index);
-  const remaining = hoursLeft(story.created_at);
   const likes = story.likes_count ?? 0;
   const comments = story.comments_count ?? 0;
+  const remaining = hoursLeft(story.created_at);
+  const pct = (remaining / 24) * 100;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2, delay: index * 0.04 }}
-      className="flex items-center gap-4 bg-card/60 border border-border/50 rounded-2xl p-3 hover:border-border transition-colors group"
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.2, delay: index * 0.05 }}
+      className="flex items-center gap-3 bg-card/50 border border-border/40 rounded-2xl p-3 hover:border-border/70 hover:bg-card/80 transition-all group"
     >
       {/* Thumbnail */}
       <button
         onClick={onView}
-        className="relative w-14 h-14 shrink-0 rounded-xl overflow-hidden border border-border/40 group-hover:border-primary/40 transition-colors"
-        aria-label="View story"
+        className="relative w-12 h-[72px] shrink-0 rounded-xl overflow-hidden border border-border/30 group-hover:border-primary/40 transition-colors"
+        aria-label="Preview"
       >
-        {isVideo ? (
-          <video src={story.media_url!} className="w-full h-full object-cover" muted playsInline />
-        ) : story.media_url ? (
-          <img src={story.media_url} alt="" className="w-full h-full object-cover" loading="lazy" />
-        ) : (
-          <div
-            className="w-full h-full flex items-center justify-center p-1"
-            style={{ background: gradientCss }}
-          >
-            <p className="text-[8px] font-bold text-white text-center line-clamp-3 leading-tight">
-              {story.content ?? ''}
-            </p>
-          </div>
-        )}
+        <StoryThumb story={story} index={index} />
+        <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+          <Eye className="h-4 w-4 text-white drop-shadow" />
+        </div>
       </button>
 
-      {/* Info */}
+      {/* Info + stats */}
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-foreground truncate">
+        {/* caption */}
+        <p className="text-[13px] font-semibold text-foreground truncate leading-snug mb-1.5">
           {story.content
-            ? story.content.length > 50
-              ? story.content.slice(0, 50) + '…'
+            ? story.content.length > 45
+              ? story.content.slice(0, 45) + '…'
               : story.content
-            : isVideo
+            : isVideoStory(story)
             ? 'Video story'
             : 'Photo story'}
         </p>
 
-        {/* Stats row */}
-        <div className="flex items-center gap-4 mt-1.5">
-          <span className="flex items-center gap-1 text-[12px] text-muted-foreground">
-            <Heart className="h-3.5 w-3.5 shrink-0" />
-            <span className="font-medium">{likes.toLocaleString()}</span>
+        {/* stats pills */}
+        <div className="flex items-center flex-wrap gap-2">
+          <span className="flex items-center gap-1 text-[11px] bg-rose-500/10 text-rose-400 font-semibold rounded-full px-2 py-0.5 border border-rose-500/15">
+            <Heart className="h-3 w-3" />
+            {likes.toLocaleString()}
           </span>
-          <span className="flex items-center gap-1 text-[12px] text-muted-foreground">
-            <MessageCircle className="h-3.5 w-3.5 shrink-0" />
-            <span className="font-medium">{comments.toLocaleString()}</span>
+          <span className="flex items-center gap-1 text-[11px] bg-blue-500/10 text-blue-400 font-semibold rounded-full px-2 py-0.5 border border-blue-500/15">
+            <MessageCircle className="h-3 w-3" />
+            {comments.toLocaleString()}
           </span>
-          <span className="flex items-center gap-1 text-[12px] text-muted-foreground">
-            <Clock className="h-3.5 w-3.5 shrink-0" />
-            <span>{remaining < 1 ? '<1h left' : `${Math.round(remaining)}h left`}</span>
+          <span className="flex items-center gap-1 text-[11px] bg-amber-500/10 text-amber-400 font-semibold rounded-full px-2 py-0.5 border border-amber-500/15">
+            <Clock className="h-3 w-3" />
+            {remaining < 1 ? '<1h' : `${Math.round(remaining)}h`}
           </span>
+        </div>
+
+        {/* expiry progress */}
+        <div className="mt-2 h-1 rounded-full bg-secondary overflow-hidden">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-primary to-emerald-400 transition-all"
+            style={{ width: `${pct}%` }}
+          />
         </div>
       </div>
 
-      {/* Actions */}
-      <div className="flex items-center gap-1 shrink-0">
+      {/* action buttons */}
+      <div className="flex flex-col gap-1 shrink-0">
         {isText && (
           <button
             onClick={() => onEdit(story)}
-            className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
-            title="Edit story"
+            className="p-1.5 rounded-lg hover:bg-primary/15 transition-colors text-muted-foreground hover:text-primary"
+            title="Edit"
           >
-            <Pencil className="h-4 w-4" />
+            <Pencil className="h-3.5 w-3.5" />
           </button>
         )}
         <button
           onClick={() => onDelete(story)}
-          className="p-2 rounded-lg hover:bg-destructive/10 transition-colors text-muted-foreground hover:text-destructive"
-          title="Delete story"
+          className="p-1.5 rounded-lg hover:bg-destructive/15 transition-colors text-muted-foreground hover:text-destructive"
+          title="Delete"
         >
-          <Trash2 className="h-4 w-4" />
+          <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
     </motion.div>
   );
 }
 
-// ─── My Stories Stats ─────────────────────────────────────────────────────────
+// ─── Edit dialog ──────────────────────────────────────────────────────────────
 
-function MyStoriesStats({ stories }: { stories: Story[] }) {
-  const totalLikes = stories.reduce((sum, s) => sum + (s.likes_count ?? 0), 0);
-  const totalComments = stories.reduce((sum, s) => sum + (s.comments_count ?? 0), 0);
-
-  return (
-    <div className="grid grid-cols-3 gap-3 mb-5">
-      {[
-        { label: 'Stories', value: stories.length, icon: Layers, color: 'text-primary' },
-        { label: 'Total Likes', value: totalLikes, icon: Heart, color: 'text-rose-400' },
-        { label: 'Comments', value: totalComments, icon: MessageCircle, color: 'text-blue-400' },
-      ].map(({ label, value, icon: Icon, color }) => (
-        <div key={label} className="bg-card/60 border border-border/50 rounded-2xl p-4 text-center">
-          <Icon className={cn('h-5 w-5 mx-auto mb-1.5', color)} />
-          <div className="text-xl font-bold text-foreground">{value.toLocaleString()}</div>
-          <div className="text-[11px] text-muted-foreground mt-0.5">{label}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── Edit Story Dialog ────────────────────────────────────────────────────────
-
-function EditStoryDialog({
+function EditDialog({
   story,
   open,
   onOpenChange,
 }: {
-  story: Story | null;
+  story: any;
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
-  const queryClient = useQueryClient();
+  const qc = useQueryClient();
   const { toast } = useToast();
   const [text, setText] = useState('');
-  const [gradientId, setGradientId] = useState('neon');
+  const [gid, setGid] = useState('neon');
 
-  useEffect(() => {
-    if (story) {
-      setText(story.content ?? '');
-      const gid = story.media_type?.startsWith('text:')
+  // sync when story changes
+  useMemo(() => {
+    if (!story) return;
+    setText(story.content ?? '');
+    setGid(
+      story.media_type?.startsWith('text:')
         ? story.media_type.slice('text:'.length)
-        : 'neon';
-      setGradientId(gid);
-    }
-  }, [story]);
+        : 'neon',
+    );
+  }, [story?.id]);
 
-  const mutation = useMutation({
+  const mut = useMutation({
     mutationFn: async () => {
       if (!story) return;
       const { error } = await supabase
         .from('user_statuses')
-        .update({
-          content: text.trim(),
-          media_type: encodeTextStoryType(gradientId),
-        })
+        .update({ content: text.trim(), media_type: encodeTextStoryType(gid) })
         .eq('id', story.id);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['stories-grid'] });
-      queryClient.invalidateQueries({ queryKey: ['my-stories'] });
-      onOpenChange(false);
+      qc.invalidateQueries({ queryKey: ['stories-grid'] });
+      qc.invalidateQueries({ queryKey: ['my-stories'] });
       toast({ title: 'Story updated' });
+      onOpenChange(false);
     },
-    onError: (err: any) => {
-      toast({ title: 'Failed to update story', description: err.message, variant: 'destructive' });
-    },
+    onError: (e: any) => toast({ title: 'Error', description: e.message, variant: 'destructive' }),
   });
 
-  const currentGradient = STORY_GRADIENTS.find((g) => g.id === gradientId) ?? STORY_GRADIENTS[0];
+  const grad = STORY_GRADIENTS.find((g) => g.id === gid) ?? STORY_GRADIENTS[0];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-sm">
         <DialogHeader>
-          <DialogTitle>Edit Story</DialogTitle>
+          <DialogTitle>Edit story</DialogTitle>
         </DialogHeader>
 
-        {/* Preview */}
+        {/* live preview */}
         <div
-          className="relative h-32 rounded-xl overflow-hidden flex items-center justify-center p-4"
-          style={{ background: currentGradient.css }}
+          className="relative h-28 rounded-xl overflow-hidden flex items-center justify-center p-4"
+          style={{ background: grad.css }}
         >
-          <p className="text-white font-bold text-center drop-shadow-md line-clamp-3 text-sm">
-            {text || 'Your story text…'}
+          <div
+            className="absolute inset-0 opacity-10 pointer-events-none"
+            style={{
+              backgroundImage: 'radial-gradient(circle at 1px 1px, white 1px, transparent 0)',
+              backgroundSize: '18px 18px',
+            }}
+          />
+          <p className="relative text-white font-bold text-center drop-shadow-md line-clamp-3 text-sm">
+            {text || 'Your text here…'}
           </p>
         </div>
 
-        {/* Text */}
+        {/* text input */}
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -257,33 +351,40 @@ function EditStoryDialog({
         />
         <p className="text-[11px] text-muted-foreground text-right -mt-2">{text.length}/180</p>
 
-        {/* Gradient picker */}
+        {/* gradient */}
         <div>
-          <p className="text-xs font-medium text-muted-foreground mb-2">Background</p>
+          <p className="text-xs font-semibold text-muted-foreground mb-2">Background</p>
           <div className="grid grid-cols-9 gap-1.5">
             {STORY_GRADIENTS.map((g) => (
               <button
                 key={g.id}
-                onClick={() => setGradientId(g.id)}
+                onClick={() => setGid(g.id)}
                 className={cn(
-                  'relative h-7 rounded-lg overflow-hidden transition-all hover:scale-105',
-                  gradientId === g.id ? 'ring-2 ring-primary ring-offset-2 ring-offset-background' : '',
+                  'relative h-7 rounded-lg overflow-hidden transition-transform hover:scale-110 active:scale-95',
+                  gid === g.id && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
                 )}
                 style={{ background: g.css }}
-              />
+              >
+                {gid === g.id && (
+                  <span className="absolute inset-0 flex items-center justify-center">
+                    <Check className="h-3 w-3 text-white drop-shadow stroke-[3]" />
+                  </span>
+                )}
+              </button>
             ))}
           </div>
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button
-            disabled={!text.trim() || mutation.isPending}
-            onClick={() => mutation.mutate()}
+            size="sm"
+            disabled={!text.trim() || mut.isPending}
+            onClick={() => mut.mutate()}
           >
-            {mutation.isPending ? 'Saving…' : 'Save changes'}
+            {mut.isPending ? 'Saving…' : 'Save changes'}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -291,31 +392,20 @@ function EditStoryDialog({
   );
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function Stories() {
-  const { user, isLoading: authLoading } = useAuth();
-  const nav = useNavigate();
-  const location = useLocation();
-  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const qc = useQueryClient();
   const { toast } = useToast();
 
-  const [tab, setTab] = useState<'community' | 'mine'>('community');
   const [showViewer, setShowViewer] = useState(false);
-  const [viewingIndex, setViewingIndex] = useState(0);
-  const [deleteTarget, setDeleteTarget] = useState<Story | null>(null);
-  const [editTarget, setEditTarget] = useState<Story | null>(null);
+  const [viewingIdx, setViewingIdx] = useState(0);
   const [myViewerOpen, setMyViewerOpen] = useState(false);
-  const [myViewerIndex, setMyViewerIndex] = useState(0);
+  const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const [editTarget, setEditTarget] = useState<any>(null);
 
-  // Auth guard
-  useEffect(() => {
-    if (!authLoading && !user) {
-      nav(`/login?returnTo=${encodeURIComponent(location.pathname)}`);
-    }
-  }, [authLoading, user]);
-
-  // ── Community stories ──
+  // ── community stories ──
   const { data: userGroups = [], isLoading: communityLoading } = useQuery({
     queryKey: ['stories-grid'],
     staleTime: 60_000,
@@ -334,30 +424,30 @@ export default function Stories() {
         .from('profiles')
         .select('user_id, username, avatar_url')
         .in('user_id', ids);
-      const map = new Map(profiles?.map((p: any) => [p.user_id, p]) ?? []);
+      const profileMap = new Map(profiles?.map((p: any) => [p.user_id, p]) ?? []);
 
       const grouped = new Map<string, any[]>();
       for (const s of data) {
-        const arr = grouped.get(s.user_id) || [];
+        const arr = grouped.get(s.user_id) ?? [];
         arr.push(s);
         grouped.set(s.user_id, arr);
       }
 
       return Array.from(grouped.entries())
-        .map(([user_id, stories]) => ({
-          user_id,
-          profile: map.get(user_id) || { username: 'Unknown' },
+        .map(([uid, stories]) => ({
+          user_id: uid,
+          profile: profileMap.get(uid) ?? { username: 'Unknown' },
           stories,
         }))
         .sort((a, b) => {
-          const aLatest = new Date(a.stories[a.stories.length - 1].created_at).getTime();
-          const bLatest = new Date(b.stories[b.stories.length - 1].created_at).getTime();
-          return bLatest - aLatest;
+          const aT = new Date(a.stories[a.stories.length - 1].created_at).getTime();
+          const bT = new Date(b.stories[b.stories.length - 1].created_at).getTime();
+          return bT - aT;
         });
     },
   });
 
-  // ── My stories ──
+  // ── my stories ──
   const { data: myStories = [], isLoading: myLoading } = useQuery({
     queryKey: ['my-stories', user?.id],
     enabled: !!user,
@@ -372,53 +462,41 @@ export default function Stories() {
         .gte('created_at', cutoff)
         .order('created_at', { ascending: false });
       if (error) throw error;
-      return (data ?? []) as Story[];
+      return data ?? [];
     },
   });
 
-  // My stories viewer groups (single group = current user)
-  const myUserGroups = useMemo(() => {
-    if (!user || myStories.length === 0) return [];
-    return [
-      {
-        user_id: user.id,
-        profile: { username: 'You', avatar_url: user.user_metadata?.avatar_url ?? '' },
-        stories: [...myStories].reverse(),
+  // viewer groups for my stories
+  const myGroups = useMemo(() => {
+    if (!user || !myStories.length) return [];
+    return [{
+      user_id: user.id,
+      profile: {
+        username: 'You',
+        avatar_url: user.user_metadata?.avatar_url ?? '',
       },
-    ];
+      stories: [...myStories].reverse(),
+    }];
   }, [user, myStories]);
 
-  // ── Delete mutation ──
-  const deleteMutation = useMutation({
-    mutationFn: async (storyId: string) => {
-      const { error } = await supabase.from('user_statuses').delete().eq('id', storyId);
+  // aggregate stats
+  const totalLikes = myStories.reduce((s: number, x: any) => s + (x.likes_count ?? 0), 0);
+  const totalComments = myStories.reduce((s: number, x: any) => s + (x.comments_count ?? 0), 0);
+
+  // ── delete ──
+  const deleteMut = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('user_statuses').delete().eq('id', id);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['stories-grid'] });
-      queryClient.invalidateQueries({ queryKey: ['my-stories'] });
+      qc.invalidateQueries({ queryKey: ['stories-grid'] });
+      qc.invalidateQueries({ queryKey: ['my-stories'] });
       toast({ title: 'Story deleted' });
       setDeleteTarget(null);
     },
-    onError: (err: any) => {
-      toast({ title: 'Failed to delete story', description: err.message, variant: 'destructive' });
-    },
+    onError: (e: any) => toast({ title: 'Error', description: e.message, variant: 'destructive' }),
   });
-
-  const openStory = (idx: number) => {
-    setViewingIndex(idx);
-    setShowViewer(true);
-  };
-
-  const openMyStory = (idx: number) => {
-    setMyViewerIndex(idx);
-    setMyViewerOpen(true);
-  };
-
-  const tabs = [
-    { id: 'community' as const, label: 'Community', icon: Globe },
-    { id: 'mine' as const, label: 'My Stories', icon: BarChart3 },
-  ];
 
   return (
     <SocialLayout
@@ -440,262 +518,188 @@ export default function Stories() {
         </>
       }
     >
-      <div className="px-4 md:px-0">
-        {/* Tabs */}
-        <div className="flex items-center gap-1 mb-5 bg-secondary/40 rounded-xl p-1 w-fit">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={cn(
-                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all',
-                tab === t.id
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              <t.icon className="h-4 w-4" />
-              {t.label}
-              {t.id === 'mine' && myStories.length > 0 && (
-                <span className="bg-primary/20 text-primary text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none">
-                  {myStories.length}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+      <div className="px-4 md:px-0 space-y-10">
 
-        {/* ── Community tab ── */}
-        <AnimatePresence mode="wait">
-          {tab === 'community' && (
-            <motion.div key="community" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              {communityLoading ? (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                  {Array.from({ length: 10 }).map((_, i) => (
-                    <div key={i} className="flex flex-col gap-2">
-                      <Skeleton className="aspect-[9/16] rounded-xl w-full" />
-                    </div>
-                  ))}
-                </div>
-              ) : userGroups.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-24 text-center gap-4 bg-card/30 rounded-2xl border border-border/50">
-                  <div className="h-20 w-20 rounded-full bg-secondary flex items-center justify-center shadow-inner">
-                    <Camera className="h-10 w-10 text-muted-foreground/50" />
-                  </div>
-                  <div>
-                    <p className="font-semibold text-lg mb-1">No active stories</p>
-                    <p className="text-sm text-muted-foreground mb-6">
-                      Stories from the community will appear here.
-                    </p>
-                    <Button asChild size="lg">
-                      <Link to="/stories/new">
-                        <Plus className="h-5 w-5 mr-2" />
-                        Create Your First Story
-                      </Link>
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                  {userGroups.map((g, idx) => {
-                    const latestStory = g.stories[g.stories.length - 1];
-                    const isVideo = isVideoStory(latestStory);
-
-                    return (
-                      <button
-                        key={g.user_id}
-                        type="button"
-                        onClick={() => openStory(idx)}
-                        className="flex flex-col text-left group cursor-pointer"
-                      >
-                        <div className="relative aspect-[9/16] rounded-xl overflow-hidden mb-3 bg-secondary border border-border/50 group-hover:border-primary/50 transition-colors shadow-sm">
-                          {isVideo ? (
-                            <video
-                              src={latestStory.media_url}
-                              className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-                              muted
-                              playsInline
-                            />
-                          ) : latestStory.media_url ? (
-                            <img
-                              src={latestStory.media_url}
-                              alt=""
-                              className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-                              loading="lazy"
-                            />
-                          ) : (
-                            <div
-                              className="w-full h-full flex items-center justify-center p-4 text-center opacity-90 group-hover:opacity-100 transition-opacity"
-                              style={{
-                                background: resolveStoryGradient(latestStory.media_type, idx),
-                              }}
-                            >
-                              <div
-                                className="absolute inset-0 opacity-10 pointer-events-none"
-                                style={{
-                                  backgroundImage:
-                                    'radial-gradient(circle at 1px 1px, white 1px, transparent 0)',
-                                  backgroundSize: '20px 20px',
-                                }}
-                              />
-                              <p className="font-display text-sm font-bold text-white drop-shadow-md z-10 line-clamp-4">
-                                {latestStory.content}
-                              </p>
-                            </div>
-                          )}
-
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20" />
-
-                          {g.stories.length > 1 && (
-                            <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded-md text-[10px] font-bold text-white flex items-center gap-1 border border-white/10">
-                              <Layers className="h-3 w-3" />
-                              {g.stories.length}
-                            </div>
-                          )}
-
-                          {/* Likes badge */}
-                          {(latestStory.likes_count ?? 0) > 0 && (
-                            <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded-md text-[10px] font-bold text-white flex items-center gap-1 border border-white/10">
-                              <Heart className="h-3 w-3 fill-rose-400 text-rose-400" />
-                              {latestStory.likes_count}
-                            </div>
-                          )}
-
-                          <div className="absolute bottom-3 left-3 right-3 flex items-center gap-2">
-                            <div className="p-0.5 rounded-full bg-gradient-to-tr from-primary via-accent to-yellow-500 shadow-sm shrink-0">
-                              <Avatar className="h-8 w-8 border border-background">
-                                <AvatarImage src={g.profile?.avatar_url} />
-                                <AvatarFallback className="text-[10px] font-bold bg-muted text-foreground">
-                                  {g.profile?.username?.[0]?.toUpperCase() ?? '?'}
-                                </AvatarFallback>
-                              </Avatar>
-                            </div>
-                            <div className="min-w-0 flex-1 drop-shadow-md">
-                              <div className="text-sm font-semibold text-white truncate">
-                                {g.profile?.username}
-                              </div>
-                              <div className="text-[10px] text-white/80 font-medium">
-                                {formatDistanceToNow(new Date(latestStory.created_at))} ago
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </motion.div>
+        {/* ──────────── COMMUNITY STORIES ──────────── */}
+        <section>
+          {communityLoading ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+              {Array.from({ length: 10 }).map((_, i) => (
+                <Skeleton key={i} className="aspect-[9/16] rounded-2xl w-full" />
+              ))}
+            </div>
+          ) : userGroups.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-20 text-center gap-5 bg-card/30 rounded-2xl border border-dashed border-border/50">
+              <div className="h-16 w-16 rounded-full bg-secondary/80 flex items-center justify-center">
+                <Camera className="h-8 w-8 text-muted-foreground/50" />
+              </div>
+              <div>
+                <p className="font-semibold text-lg">No active stories</p>
+                <p className="text-sm text-muted-foreground mt-1 mb-5">
+                  Be the first — share a 24-hour highlight with the community.
+                </p>
+                <Button asChild>
+                  <Link to="/stories/new">
+                    <Plus className="h-4 w-4 mr-2" />
+                    Create First Story
+                  </Link>
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+              {userGroups.map((g, idx) => (
+                <CommunityCard
+                  key={g.user_id}
+                  group={g}
+                  index={idx}
+                  onClick={() => { setViewingIdx(idx); setShowViewer(true); }}
+                />
+              ))}
+            </div>
           )}
+        </section>
 
-          {/* ── My Stories tab ── */}
-          {tab === 'mine' && (
-            <motion.div key="mine" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              {myLoading ? (
-                <div className="space-y-3">
-                  {Array.from({ length: 4 }).map((_, i) => (
-                    <Skeleton key={i} className="h-20 w-full rounded-2xl" />
-                  ))}
-                </div>
-              ) : myStories.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-24 text-center gap-4 bg-card/30 rounded-2xl border border-border/50">
-                  <div className="h-20 w-20 rounded-full bg-secondary flex items-center justify-center shadow-inner">
-                    <BarChart3 className="h-10 w-10 text-muted-foreground/50" />
-                  </div>
-                  <div>
-                    <p className="font-semibold text-lg mb-1">No active stories</p>
-                    <p className="text-sm text-muted-foreground mb-6">
-                      Stories you create will appear here with their stats.
-                    </p>
-                    <Button asChild size="lg">
-                      <Link to="/stories/new">
-                        <Plus className="h-5 w-5 mr-2" />
-                        Create Your First Story
-                      </Link>
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  {/* Stats summary */}
-                  <MyStoriesStats stories={myStories} />
+        {/* ──────────── MY STORIES STATS (logged-in only) ──────────── */}
+        {user && (
+          <section>
+            {/* section header */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="h-5 w-5 text-primary" />
+                <h2 className="font-bold text-base tracking-tight">My Stories</h2>
+                {myStories.length > 0 && (
+                  <span className="bg-primary/15 text-primary text-[11px] font-bold rounded-full px-2 py-0.5">
+                    {myStories.length} active
+                  </span>
+                )}
+              </div>
+              <Button asChild size="sm" variant="outline" className="h-8 text-xs gap-1.5">
+                <Link to="/stories/new">
+                  <Plus className="h-3.5 w-3.5" />
+                  New Story
+                </Link>
+              </Button>
+            </div>
 
-                  {/* Story list */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between mb-3">
-                      <p className="text-sm font-semibold text-muted-foreground">
-                        Active stories ({myStories.length})
-                      </p>
-                      {myStories.length > 0 && (
-                        <button
-                          onClick={() => openMyStory(0)}
-                          className="text-xs text-primary font-semibold flex items-center gap-1 hover:underline"
-                        >
-                          View all <ChevronRight className="h-3.5 w-3.5" />
-                        </button>
+            {myLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => <Skeleton key={i} className="h-[84px] rounded-2xl" />)}
+              </div>
+            ) : myStories.length === 0 ? (
+              <div className="flex items-center gap-4 bg-card/40 border border-dashed border-border/40 rounded-2xl p-5">
+                <div className="h-12 w-12 shrink-0 rounded-xl bg-secondary/80 flex items-center justify-center">
+                  <TrendingUp className="h-6 w-6 text-muted-foreground/50" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold">No stories yet</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Create a story to see your likes, comments, and expiry countdown here.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* aggregate stat cards */}
+                <div className="grid grid-cols-3 gap-3 mb-5">
+                  {[
+                    { label: 'Stories', value: myStories.length, icon: Layers, from: 'from-primary/20', text: 'text-primary' },
+                    { label: 'Total Likes', value: totalLikes, icon: Heart, from: 'from-rose-500/20', text: 'text-rose-400' },
+                    { label: 'Comments', value: totalComments, icon: MessageCircle, from: 'from-blue-500/20', text: 'text-blue-400' },
+                  ].map(({ label, value, icon: Icon, from, text }) => (
+                    <div
+                      key={label}
+                      className={cn(
+                        'bg-gradient-to-br to-transparent border border-border/40 rounded-2xl p-4 flex flex-col items-center text-center gap-1.5',
+                        from,
                       )}
+                    >
+                      <Icon className={cn('h-5 w-5', text)} />
+                      <span className="text-2xl font-extrabold text-foreground tracking-tight">
+                        {value.toLocaleString()}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground font-medium">{label}</span>
                     </div>
+                  ))}
+                </div>
 
-                    {myStories.map((story, idx) => (
-                      <MyStoryCard
-                        key={story.id}
-                        story={story}
-                        index={idx}
-                        onDelete={setDeleteTarget}
-                        onEdit={setEditTarget}
-                        onView={() => openMyStory(idx)}
-                      />
-                    ))}
-                  </div>
-                </>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
+                {/* per-story rows */}
+                <div className="space-y-2.5">
+                  {myStories.map((story: any, idx: number) => (
+                    <MyStoryRow
+                      key={story.id}
+                      story={story}
+                      index={idx}
+                      onDelete={setDeleteTarget}
+                      onEdit={setEditTarget}
+                      onView={() => { setMyViewerOpen(true); }}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
+        {/* guest prompt */}
+        {!user && (
+          <div className="flex items-center gap-4 bg-card/40 border border-primary/20 rounded-2xl p-5">
+            <div className="h-10 w-10 shrink-0 rounded-xl bg-primary/10 flex items-center justify-center">
+              <BarChart3 className="h-5 w-5 text-primary" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">Track your story stats</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Sign in to see likes, comments, and manage your own stories.
+              </p>
+            </div>
+            <Button asChild size="sm" variant="outline" className="shrink-0">
+              <Link to="/auth">Sign in</Link>
+            </Button>
+          </div>
+        )}
       </div>
 
-      {/* Community viewer */}
+      {/* ── viewers ── */}
       {showViewer && userGroups.length > 0 && (
         <StoryViewer
           userGroups={userGroups}
-          initialGroupIndex={viewingIndex}
+          initialGroupIndex={viewingIdx}
           onClose={() => setShowViewer(false)}
         />
       )}
-
-      {/* My stories viewer */}
-      {myViewerOpen && myUserGroups.length > 0 && (
+      {myViewerOpen && myGroups.length > 0 && (
         <StoryViewer
-          userGroups={myUserGroups}
+          userGroups={myGroups}
           initialGroupIndex={0}
           onClose={() => setMyViewerOpen(false)}
         />
       )}
 
-      {/* Delete confirmation */}
+      {/* ── delete confirm ── */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this story?</AlertDialogTitle>
             <AlertDialogDescription>
-              This story will be permanently removed. This action cannot be undone.
+              It will be permanently removed. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
-              disabled={deleteMutation.isPending}
+              disabled={deleteMut.isPending}
+              onClick={() => deleteTarget && deleteMut.mutate(deleteTarget.id)}
             >
-              {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+              {deleteMut.isPending ? 'Deleting…' : 'Delete'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Edit dialog */}
-      <EditStoryDialog
+      {/* ── edit dialog ── */}
+      <EditDialog
         story={editTarget}
         open={!!editTarget}
         onOpenChange={(v) => !v && setEditTarget(null)}

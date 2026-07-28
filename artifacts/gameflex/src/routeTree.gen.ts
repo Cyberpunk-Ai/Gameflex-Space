@@ -53,6 +53,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as TournamentsIndexRouteImport } from './routes/tournaments.index'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as TournamentsIdRouteImport } from './routes/tournaments.$id'
+import { Route as StoriesIndexRouteImport } from './routes/stories.index'
 import { Route as StoriesNewRouteImport } from './routes/stories.new'
 import { Route as SocialSettingsRouteImport } from './routes/social.settings'
 import { Route as SocialProfileRouteImport } from './routes/social.profile'
@@ -294,6 +295,11 @@ const TournamentsIdRoute = TournamentsIdRouteImport.update({
   path: '/tournaments/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const StoriesIndexRoute = StoriesIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => StoriesRoute,
+} as any)
 const StoriesNewRoute = StoriesNewRouteImport.update({
   id: '/new',
   path: '/new',
@@ -460,6 +466,7 @@ export interface FileRoutesByFullPath {
   '/tournaments/$id': typeof TournamentsIdRoute
   '/admin/': typeof AdminIndexRoute
   '/tournaments/': typeof TournamentsIndexRoute
+  '/stories/': typeof StoriesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -525,6 +532,7 @@ export interface FileRoutesByTo {
   '/tournaments/$id': typeof TournamentsIdRoute
   '/admin': typeof AdminIndexRoute
   '/tournaments': typeof TournamentsIndexRoute
+  '/stories': typeof StoriesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -592,6 +600,7 @@ export interface FileRoutesById {
   '/tournaments/$id': typeof TournamentsIdRoute
   '/admin/': typeof AdminIndexRoute
   '/tournaments/': typeof TournamentsIndexRoute
+  '/stories/': typeof StoriesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -660,6 +669,7 @@ export interface FileRouteTypes {
     | '/tournaments/$id'
     | '/admin/'
     | '/tournaments/'
+    | '/stories/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -1152,6 +1162,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TournamentsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/stories/': {
+      id: '/stories/'
+      path: '/'
+      fullPath: '/stories/'
+      preLoaderRoute: typeof StoriesIndexRouteImport
+      parentRoute: typeof StoriesRoute
+    }
     '/stories/new': {
       id: '/stories/new'
       path: '/new'
@@ -1347,10 +1364,12 @@ const SocialRouteWithChildren =
   SocialRoute._addFileChildren(SocialRouteChildren)
 
 interface StoriesRouteChildren {
+  StoriesIndexRoute: typeof StoriesIndexRoute
   StoriesNewRoute: typeof StoriesNewRoute
 }
 
 const StoriesRouteChildren: StoriesRouteChildren = {
+  StoriesIndexRoute: StoriesIndexRoute,
   StoriesNewRoute: StoriesNewRoute,
 }
 
