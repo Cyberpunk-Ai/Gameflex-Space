@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "GameFlex"
+version = "1.0.0"
+id = "artifacts/gameflex"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20405
+
+[services.development]
+run = "pnpm --filter @workspace/gameflex run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/gameflex", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/gameflex/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20405"
+BASE_PATH = "/"
