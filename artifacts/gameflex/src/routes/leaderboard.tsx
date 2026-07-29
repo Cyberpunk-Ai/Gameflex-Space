@@ -1,7 +1,9 @@
 // @ts-nocheck
 import { pageSeo } from "@/lib/seo";
 import { createFileRoute } from "@tanstack/react-router";
-import Page from "@/pages/Leaderboard";
+import { createLazyPage } from "@/lib/lazy-page";
+
+const Page = createLazyPage(() => import("@/pages/Leaderboard"));
 
 export const Route = createFileRoute("/leaderboard")({
   head: () =>

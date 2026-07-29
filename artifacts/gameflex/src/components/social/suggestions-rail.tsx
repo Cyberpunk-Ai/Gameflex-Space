@@ -116,7 +116,7 @@ export function SuggestionsRail() {
           <Link to="/privacy" className="hover:underline">Privacy</Link>
           <Link to="/terms" className="hover:underline">Terms</Link>
         </div>
-        <p className="tracking-tight">© 2024 GAMEFLEX BY REPLIT</p>
+        <p className="tracking-tight">© 2024 GAMEFLEX</p>
       </div>
     </div>
   );

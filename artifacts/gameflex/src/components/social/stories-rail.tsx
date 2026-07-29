@@ -17,6 +17,22 @@ import { encryptMessage, decryptMessage } from '@/lib/encryption';
 
 const REACTIONS = ['❤️', '🔥', '😂', '😮', '😢', '🎮'] as const;
 
+function serializeReplyContent(content: string, replyTo?: string | null) {
+  const trimmed = (replyTo ?? '').trim();
+  if (!trimmed) return content;
+  return `↩${trimmed}::${content}`;
+}
+
+function parseReplyContent(content: string) {
+  if (!content.startsWith('↩')) return { replyTo: null, body: content };
+  const separator = content.indexOf('::');
+  if (separator === -1) return { replyTo: null, body: content.slice(1) };
+  return {
+    replyTo: content.slice(1, separator).trim() || null,
+    body: content.slice(separator + 2),
+  };
+}
+
 // ─── StoryViewer ─────────────────────────────────────────────────────────────
 
 export function StoryViewer({
@@ -35,6 +51,7 @@ export function StoryViewer({
   const [progress, setProgress] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [replyText, setReplyText] = useState('');
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [showComments, setShowComments] = useState(false);
   const [reactionAnim, setReactionAnim] = useState<string | null>(null);
   const [likeAnim, setLikeAnim] = useState(false);
@@ -73,6 +90,11 @@ export function StoryViewer({
       }));
     },
   });
+
+  const commentCount = useMemo(() => {
+    if (comments.length > 0) return comments.length;
+    return story?.comments_count ?? 0;
+  }, [comments, story?.comments_count]);
 
   // ── likes for current story ──
   const { data: storyLikes } = useQuery({
@@ -157,7 +179,7 @@ export function StoryViewer({
   });
 
   const replyMut = useMutation({
-    mutationFn: async (content: string) => {
+    mutationFn: async ({ content, parentId }: { content: string; parentId: string | null }) => {
       if (!user) throw new Error('Sign in to comment');
       let storedContent = content;
       let isEncrypted = false;
@@ -167,18 +189,23 @@ export function StoryViewer({
       } catch {
         // fall back to plain text if encryption fails
       }
-      const { error } = await supabase.from('status_comments').insert({
+
+      const targetComment = parentId ? comments.find((c: any) => c.id === parentId) : null;
+      const payloadContent = serializeReplyContent(storedContent, targetComment?.profile?.username);
+      const insertPayload = {
         status_id: story.id,
         user_id: user.id,
-        content: storedContent,
+        content: payloadContent,
         is_encrypted: isEncrypted,
-      });
+      };
+      const { error } = await supabase.from('status_comments').insert(insertPayload);
       if (error) throw error;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['story-comments', story?.id] });
       qc.invalidateQueries({ queryKey: ['my-stories'] });
       setReplyText('');
+      setReplyingTo(null);
     },
   });
 
@@ -245,6 +272,7 @@ export function StoryViewer({
   useEffect(() => {
     setProgress(0);
     setReplyText('');
+    setReplyingTo(null);
     setShowComments(false);
   }, [story?.id]);
 
@@ -281,8 +309,9 @@ export function StoryViewer({
   const isVideo = isVideoStory(story);
   const isLiked = storyLikes?.isLiked ?? false;
   const likeCount = storyLikes?.count ?? story.likes_count ?? 0;
-  // Use live comment count when loaded, fall back to stale story field
-  const commentCount = comments.length > 0 ? comments.length : (story.comments_count ?? 0);
+  const submitReply = (content: string) => {
+    replyMut.mutate({ content, parentId: replyingTo });
+  };
 
   return (
     <div className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center">
@@ -438,7 +467,7 @@ export function StoryViewer({
                     e.stopPropagation();
                     if (e.key === 'Enter' && replyText.trim() && !replyMut.isPending) {
                       e.preventDefault();
-                      replyMut.mutate(replyText.trim());
+                      submitReply(replyText.trim());
                     }
                   }}
                   placeholder={user ? `Reply to ${currentGroup.profile?.username}…` : 'Sign in to reply…'}
@@ -447,7 +476,7 @@ export function StoryViewer({
                 />
                 {replyText.trim() && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); replyMut.mutate(replyText.trim()); }}
+                    onClick={(e) => { e.stopPropagation(); submitReply(replyText.trim()); }}
                     disabled={replyMut.isPending}
                     className="h-10 w-10 rounded-full bg-primary flex items-center justify-center hover:bg-primary/90 disabled:opacity-50 transition-colors shrink-0">
                     <Send className="h-4 w-4 text-primary-foreground" />
@@ -486,25 +515,47 @@ export function StoryViewer({
                 ) : comments.length === 0 ? (
                   <p className="text-white/40 text-sm text-center py-4">No comments yet. Be the first!</p>
                 ) : (
-                  comments.map((c: any) => (
-                    <div key={c.id} className="flex items-start gap-3">
-                      <Avatar className="h-7 w-7 shrink-0 border border-white/10">
-                        <AvatarImage src={c.profile?.avatar_url} />
-                        <AvatarFallback className="text-[9px] bg-secondary text-foreground font-bold">
-                          {c.profile?.username?.[0]?.toUpperCase() ?? '?'}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-baseline gap-2">
-                          <span className="text-white text-xs font-bold">{c.profile?.username ?? 'User'}</span>
-                          <span className="text-white/40 text-[10px]">
-                            {formatDistanceToNow(new Date(c.created_at), { addSuffix: true })}
-                          </span>
+                  comments.map((c: any) => {
+                    const parsed = parseReplyContent(c.displayText ?? '');
+                    return (
+                      <div key={c.id} className="flex items-start gap-3">
+                        <Avatar className="h-7 w-7 shrink-0 border border-white/10">
+                          <AvatarImage src={c.profile?.avatar_url} />
+                          <AvatarFallback className="text-[9px] bg-secondary text-foreground font-bold">
+                            {c.profile?.username?.[0]?.toUpperCase() ?? '?'}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center flex-wrap gap-2">
+                            <span className="text-white text-xs font-bold">{c.profile?.username ?? 'User'}</span>
+                            <span className="text-white/40 text-[10px]">
+                              {formatDistanceToNow(new Date(c.created_at), { addSuffix: true })}
+                            </span>
+                            {user && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReplyingTo(c.id);
+                                  setReplyText('');
+                                  setIsPaused(true);
+                                }}
+                                className="text-[10px] font-semibold uppercase tracking-wide text-primary/80 hover:text-primary"
+                              >
+                                Reply
+                              </button>
+                            )}
+                          </div>
+                          {parsed.replyTo && (
+                            <p className="text-[10px] text-primary/80 mt-1">Replying to {parsed.replyTo}</p>
+                          )}
+                          <p className="text-white/80 text-sm mt-0.5 break-words">{parsed.body}</p>
+                          {replyingTo === c.id && (
+                            <p className="text-[11px] text-primary mt-1">Replying to {c.profile?.username ?? 'this comment'}</p>
+                          )}
                         </div>
-                        <p className="text-white/80 text-sm mt-0.5 break-words">{c.displayText}</p>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
 
@@ -518,16 +569,16 @@ export function StoryViewer({
                     onKeyDown={e => {
                       if (e.key === 'Enter' && replyText.trim() && !replyMut.isPending) {
                         e.preventDefault();
-                        replyMut.mutate(replyText.trim());
+                        submitReply(replyText.trim());
                       }
                     }}
-                    placeholder={user ? 'Add a comment…' : 'Sign in to comment…'}
+                    placeholder={user ? (replyingTo ? 'Reply to the selected comment…' : 'Add a comment…') : 'Sign in to comment…'}
                     disabled={!user || replyMut.isPending}
                     className="flex-1 bg-white/10 border border-white/10 rounded-full py-2.5 px-4 text-white placeholder:text-white/40 text-sm focus:outline-none focus:border-white/30"
                   />
                   {replyText.trim() && (
                     <button
-                      onClick={() => replyMut.mutate(replyText.trim())}
+                      onClick={() => submitReply(replyText.trim())}
                       disabled={replyMut.isPending}
                       className="h-9 w-9 rounded-full bg-primary flex items-center justify-center hover:bg-primary/90 disabled:opacity-50 shrink-0 transition-colors">
                       <Send className="h-4 w-4 text-primary-foreground" />

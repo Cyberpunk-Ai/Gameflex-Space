@@ -58,7 +58,6 @@ const Rewards = () => {
           filter: `user_id=eq.${user.id}`
         },
         (payload) => {
-          console.log('Rewards update:', payload);
           queryClient.invalidateQueries({ queryKey: ['rewards', user.id] });
           
           if (payload.eventType === 'INSERT') {

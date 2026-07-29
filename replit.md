@@ -9,6 +9,18 @@ Kenya's premier gaming tournament platform — compete, win, and earn with M-Pes
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 
+## VPS deployment (Contabo-style)
+
+- Build the app on the server: `pnpm install && pnpm build`
+- Start the API with: `PORT=5000 NODE_ENV=production pnpm --filter @workspace/api-server run start`
+- Serve the frontend build from [artifacts/gameflex/dist/public](artifacts/gameflex/dist/public) with Nginx or another static host
+- Set these environment variables before starting the app:
+  - `PORT=5000`
+  - `NODE_ENV=production`
+  - `VITE_SUPABASE_URL=<your-supabase-url>`
+  - `VITE_SUPABASE_ANON_KEY=<your-supabase-anon-key>`
+- Use a process manager such as PM2 for automatic restarts and log rotation
+
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9

@@ -53,39 +53,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    // Set up auth state listener FIRST
+    let isActive = true;
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
+      (_event, session) => {
+        if (!isActive) return;
         setSession(session);
         setUser(session?.user ?? null);
 
-        // Defer profile fetch with setTimeout to avoid deadlock
         if (session?.user) {
-          setTimeout(() => {
-            fetchProfile(session.user.id);
-            checkAdminRole(session.user.id);
-          }, 0);
+          void Promise.all([
+            fetchProfile(session.user.id),
+            checkAdminRole(session.user.id),
+          ]);
         } else {
           setProfile(null);
           setIsAdmin(false);
         }
-      }
+      },
     );
 
-    // THEN check for existing session
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!isActive) return;
       setSession(session);
       setUser(session?.user ?? null);
-      
+
       if (session?.user) {
-        fetchProfile(session.user.id);
-        checkAdminRole(session.user.id);
+        void Promise.all([
+          fetchProfile(session.user.id),
+          checkAdminRole(session.user.id),
+        ]);
       }
-      
+
       setIsLoading(false);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      isActive = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const login = async (email: string, password: string) => {

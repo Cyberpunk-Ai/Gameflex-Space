@@ -53,8 +53,7 @@ export default function Leaderboard() {
           schema: 'public',
           table: 'leaderboard_stats'
         },
-        (payload) => {
-          console.log('Leaderboard update:', payload);
+        () => {
           queryClient.invalidateQueries({ queryKey: ['leaderboard'] });
           toast({
             title: '📊 Leaderboard Updated',

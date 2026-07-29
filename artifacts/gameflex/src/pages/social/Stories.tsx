@@ -107,6 +107,7 @@ function CommunityCard({
 }) {
   const latest = group.stories[group.stories.length - 1];
   const totalLikes = group.stories.reduce((s: number, x: any) => s + (x.likes_count ?? 0), 0);
+  const totalViews = group.stories.reduce((s: number, x: any) => s + (x.views_count ?? 0), 0);
 
   return (
     <motion.button
@@ -131,13 +132,21 @@ function CommunityCard({
           </div>
         )}
 
-        {/* likes badge */}
-        {totalLikes > 0 && (
-          <div className="absolute top-2.5 left-2.5 bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded-full text-[10px] font-bold text-white flex items-center gap-1 border border-white/10">
-            <Heart className="h-3 w-3 fill-rose-400 text-rose-400" />
-            {totalLikes}
-          </div>
-        )}
+        {/* engagement badges */}
+        <div className="absolute top-2.5 left-2.5 flex flex-wrap gap-1.5">
+          {totalLikes > 0 && (
+            <div className="bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded-full text-[10px] font-bold text-white flex items-center gap-1 border border-white/10">
+              <Heart className="h-3 w-3 fill-rose-400 text-rose-400" />
+              {totalLikes}
+            </div>
+          )}
+          {totalViews > 0 && (
+            <div className="bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded-full text-[10px] font-bold text-white flex items-center gap-1 border border-white/10">
+              <Eye className="h-3 w-3" />
+              {totalViews}
+            </div>
+          )}
+        </div>
 
         {/* user info */}
         <div className="absolute bottom-0 left-0 right-0 p-3 flex items-end gap-2">
@@ -186,6 +195,7 @@ function MyStoryRow({
   const isText = !story.media_url;
   const likes = story.likes_count ?? 0;
   const comments = story.comments_count ?? 0;
+  const views = story.views_count ?? 0;
   const remaining = hoursLeft(story.created_at);
   const pct = (remaining / 24) * 100;
 
@@ -230,6 +240,10 @@ function MyStoryRow({
           <span className="flex items-center gap-1 text-[11px] bg-blue-500/10 text-blue-400 font-semibold rounded-full px-2 py-0.5 border border-blue-500/15">
             <MessageCircle className="h-3 w-3" />
             {comments.toLocaleString()}
+          </span>
+          <span className="flex items-center gap-1 text-[11px] bg-emerald-500/10 text-emerald-400 font-semibold rounded-full px-2 py-0.5 border border-emerald-500/15">
+            <Eye className="h-3 w-3" />
+            {views.toLocaleString()}
           </span>
           <span className="flex items-center gap-1 text-[11px] bg-amber-500/10 text-amber-400 font-semibold rounded-full px-2 py-0.5 border border-amber-500/15">
             <Clock className="h-3 w-3" />
@@ -402,6 +416,8 @@ export default function Stories() {
   const [showViewer, setShowViewer] = useState(false);
   const [viewingIdx, setViewingIdx] = useState(0);
   const [myViewerOpen, setMyViewerOpen] = useState(false);
+  const [myViewerStartIndex, setMyViewerStartIndex] = useState(0);
+  const [myViewerOpenComments, setMyViewerOpenComments] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const [editTarget, setEditTarget] = useState<any>(null);
 
@@ -457,7 +473,7 @@ export default function Stories() {
       const cutoff = subHours(new Date(), 24).toISOString();
       const { data, error } = await supabase
         .from('user_statuses')
-        .select('id, user_id, content, media_url, media_type, created_at, likes_count, comments_count')
+        .select('id, user_id, content, media_url, media_type, created_at, likes_count, comments_count, views_count')
         .eq('user_id', user.id)
         .gte('created_at', cutoff)
         .order('created_at', { ascending: false });
@@ -482,6 +498,7 @@ export default function Stories() {
   // aggregate stats
   const totalLikes = myStories.reduce((s: number, x: any) => s + (x.likes_count ?? 0), 0);
   const totalComments = myStories.reduce((s: number, x: any) => s + (x.comments_count ?? 0), 0);
+  const totalViews = myStories.reduce((s: number, x: any) => s + (x.views_count ?? 0), 0);
 
   // ── delete ──
   const deleteMut = useMutation({
@@ -601,11 +618,12 @@ export default function Stories() {
             ) : (
               <>
                 {/* aggregate stat cards */}
-                <div className="grid grid-cols-3 gap-3 mb-5">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
                   {[
                     { label: 'Stories', value: myStories.length, icon: Layers, from: 'from-primary/20', text: 'text-primary' },
                     { label: 'Total Likes', value: totalLikes, icon: Heart, from: 'from-rose-500/20', text: 'text-rose-400' },
                     { label: 'Comments', value: totalComments, icon: MessageCircle, from: 'from-blue-500/20', text: 'text-blue-400' },
+                    { label: 'Views', value: totalViews, icon: Eye, from: 'from-emerald-500/20', text: 'text-emerald-400' },
                   ].map(({ label, value, icon: Icon, from, text }) => (
                     <div
                       key={label}
@@ -632,7 +650,16 @@ export default function Stories() {
                       index={idx}
                       onDelete={setDeleteTarget}
                       onEdit={setEditTarget}
-                      onView={() => { setMyViewerOpen(true); }}
+                      onView={() => {
+                        setMyViewerStartIndex(myStories.length - 1 - idx);
+                        setMyViewerOpenComments(false);
+                        setMyViewerOpen(true);
+                      }}
+                      onComment={() => {
+                        setMyViewerStartIndex(myStories.length - 1 - idx);
+                        setMyViewerOpenComments(true);
+                        setMyViewerOpen(true);
+                      }}
                     />
                   ))}
                 </div>
@@ -672,7 +699,12 @@ export default function Stories() {
         <StoryViewer
           userGroups={myGroups}
           initialGroupIndex={0}
-          onClose={() => setMyViewerOpen(false)}
+          initialStoryIndex={myViewerStartIndex}
+          openComments={myViewerOpenComments}
+          onClose={() => {
+            setMyViewerOpen(false);
+            setMyViewerOpenComments(false);
+          }}
         />
       )}
 

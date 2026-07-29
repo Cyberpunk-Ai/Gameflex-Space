@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { pageSeo } from "@/lib/seo";
 import { createFileRoute } from "@tanstack/react-router";
-import NotFound from "@/pages/NotFound";
+import NotFound from '@/pages/NotFound';
 
 export const Route = createFileRoute("/$")({
   head: () =>

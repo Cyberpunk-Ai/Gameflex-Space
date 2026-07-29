@@ -123,29 +123,28 @@ export function ConversationList({ selectedConversationId, onSelectConversation,
   });
 
   // Decrypt last message previews
+  function parseMessagePreview(raw: string) {
+    if (raw.startsWith('[IMAGE]')) return 'Photo';
+    if (raw.startsWith('[VIDEO]')) return 'Video';
+    if (raw.startsWith('[FILE]')) return 'File';
+    return raw.slice(0, 40) + (raw.length > 40 ? '...' : '');
+  }
+
   useEffect(() => {
     async function decryptPreviews() {
       const previews = new Map<string, string>();
       for (const conv of conversations) {
         if (conv.lastMsg) {
           const msg = conv.lastMsg;
-          if (msg.message_type === 'image') {
-            previews.set(conv.id, 'Photo');
-          } else if (msg.message_type === 'video') {
-            previews.set(conv.id, 'Video');
-          } else if (msg.message_type === 'file') {
-            previews.set(conv.id, 'File');
-          } else if (msg.is_encrypted) {
+          if (msg.is_encrypted) {
             try {
               const decrypted = await decryptMessage(msg.content);
-              const trimmed = decrypted.slice(0, 40) + (decrypted.length > 40 ? '...' : '');
-              previews.set(conv.id, trimmed);
+              previews.set(conv.id, parseMessagePreview(decrypted));
             } catch {
               previews.set(conv.id, 'Encrypted message');
             }
           } else {
-            const trimmed = msg.content.slice(0, 40) + (msg.content.length > 40 ? '...' : '');
-            previews.set(conv.id, trimmed);
+            previews.set(conv.id, parseMessagePreview(msg.content));
           }
         }
       }

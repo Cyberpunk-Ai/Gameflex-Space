@@ -28,6 +28,13 @@ interface ChatWindowProps {
 const REACTION_EMOJIS = ['❤️', '😂', '😮', '😢', '👍', '🔥'];
 const COMMON_EMOJIS = ['😀','😂','😍','🥰','😎','🤔','👍','👏','🔥','💯','❤️','🎮','🏆','💪','🎉','😅','😭','😤','🤣','✨','😱','🤩','😇','🙌','💀','🎯','⚡','🌟','👀','🤝','😏','🥳','🫡','💚','🎊','🎁','🚀','🌈','💫','🔫'];
 
+function parseChatContent(raw: string) {
+  if (raw.startsWith('[IMAGE]')) return { type: 'image', url: raw.slice('[IMAGE]'.length) };
+  if (raw.startsWith('[VIDEO]')) return { type: 'video', url: raw.slice('[VIDEO]'.length) };
+  if (raw.startsWith('[FILE]')) return { type: 'file', url: raw.slice('[FILE]'.length) };
+  return { type: 'text', body: raw };
+}
+
 function TypingIndicator() {
   return (
     <div className="flex justify-start mb-2">
@@ -316,7 +323,6 @@ export function ChatWindow({ conversationId, otherUser, onBack }: ChatWindowProp
         sender_id: user.id,
         content: encrypted,
         is_encrypted: true,
-        message_type: 'image',
       });
       if (insertError) throw insertError;
 
@@ -371,13 +377,13 @@ export function ChatWindow({ conversationId, otherUser, onBack }: ChatWindowProp
 
   function MessageContent({ msg }: { msg: any }) {
     const decrypted = decryptedMessages.get(msg.id) ?? '';
-    
-    if (msg.message_type === 'image') {
-      const imageUrl = decrypted.replace('[IMAGE]', '');
-      return <img src={imageUrl} alt="Shared image" className="max-w-[280px] rounded-xl" />;
+    const parsed = parseChatContent(decrypted);
+
+    if (parsed.type === 'image') {
+      return <img src={parsed.url} alt="Shared image" className="max-w-[280px] rounded-xl" />;
     }
-    
-    if (msg.message_type === 'video') {
+
+    if (parsed.type === 'video') {
       return (
         <div className="flex items-center gap-2 text-muted-foreground">
           <ImageIcon className="h-4 w-4" />
@@ -385,8 +391,8 @@ export function ChatWindow({ conversationId, otherUser, onBack }: ChatWindowProp
         </div>
       );
     }
-    
-    if (msg.message_type === 'file') {
+
+    if (parsed.type === 'file') {
       return (
         <div className="flex items-center gap-2 text-muted-foreground">
           <FileIcon className="h-4 w-4" />
@@ -395,7 +401,7 @@ export function ChatWindow({ conversationId, otherUser, onBack }: ChatWindowProp
       );
     }
 
-    if (decrypted === '[Message deleted]') {
+    if (parsed.body === '[Message deleted]') {
       return <span className="italic text-muted-foreground text-xs">Message deleted</span>;
     }
 

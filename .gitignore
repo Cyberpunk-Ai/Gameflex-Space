@@ -36,6 +36,13 @@ npm-debug.log
 yarn-error.log
 testem.log
 /typings
+.env
+.env.local
+.env.*.local
+
+# deployment artifacts
+.cache/
+.local/
 
 # System Files
 .DS_Store
