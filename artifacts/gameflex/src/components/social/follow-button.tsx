@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { UserPlus, UserMinus, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
+import { recommendationEventService } from '@/services/recommendations/RecommendationEventService';
 
 interface FollowButtonProps {
   userId: string;
@@ -70,6 +71,12 @@ export function FollowButton({
         description: isFollowing 
           ? `You unfollowed ${username || 'this user'}` 
           : `You're now following ${username || 'this user'}`
+      });
+      void recommendationEventService.recordEvent({
+        userId: user?.id ?? null,
+        entityType: 'profile',
+        entityId: userId,
+        action: isFollowing ? 'unfollow' : 'follow',
       });
     },
     onError: () => {

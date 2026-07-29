@@ -4,6 +4,7 @@ import { Link } from '@/lib/router-compat';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/lib/auth-context';
 import { recommendationService } from '@/services/recommendations/RecommendationService';
+import { recommendationEventService } from '@/services/recommendations/RecommendationEventService';
 import { formatDistanceToNow } from 'date-fns';
 import {
   Heart, MessageCircle, Send, Bookmark, Trash2, TrendingUp,
@@ -411,6 +412,16 @@ export function StatusFeed({ mode = 'foryou' }: { mode?: 'foryou' | 'trending' |
       if (ctx?.prev) qc.setQueryData(['user-statuses', mode, user?.id ?? 'anon', trendingKey], ctx.prev);
       toast({ title: 'Sign in to like posts', variant: 'destructive' });
     },
+    onSuccess: (_data, { statusId, isLiked }) => {
+      if (!isLiked) {
+        void recommendationEventService.recordEvent({
+          userId: user?.id ?? null,
+          entityType: 'post',
+          entityId: statusId,
+          action: 'like',
+        });
+      }
+    },
   });
 
   const saveMut = useMutation({
@@ -429,6 +440,14 @@ export function StatusFeed({ mode = 'foryou' }: { mode?: 'foryou' | 'trending' |
         return next;
       });
       toast({ title: isSaved ? 'Removed from saved' : 'Post saved!' });
+      if (!isSaved) {
+        void recommendationEventService.recordEvent({
+          userId: user?.id ?? null,
+          entityType: 'post',
+          entityId: statusId,
+          action: 'save',
+        });
+      }
     },
     onError: () => {
       // table might not exist — fall back to local-only
@@ -453,6 +472,12 @@ export function StatusFeed({ mode = 'foryou' }: { mode?: 'foryou' | 'trending' |
     try {
       const { data } = await supabase.from('user_statuses').select('views_count').eq('id', id).single();
       await supabase.from('user_statuses').update({ views_count: (data?.views_count ?? 0) + 1 }).eq('id', id);
+      void recommendationEventService.recordEvent({
+        userId: user?.id ?? null,
+        entityType: 'post',
+        entityId: id,
+        action: 'view',
+      });
     } catch {}
   };
 
@@ -467,6 +492,12 @@ export function StatusFeed({ mode = 'foryou' }: { mode?: 'foryou' | 'trending' |
     const url = `${window.location.origin}/social?status=${status.id}`;
     if (navigator.share) {
       try { await navigator.share({ title: 'Check out this post on GameFlex', url }); return; } catch {}
+      void recommendationEventService.recordEvent({
+        userId: user?.id ?? null,
+        entityType: 'post',
+        entityId: status.id,
+        action: 'share',
+      });
     }
     navigator.clipboard.writeText(url);
     toast({ title: 'Link copied!' });

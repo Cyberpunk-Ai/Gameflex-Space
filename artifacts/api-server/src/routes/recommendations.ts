@@ -21,4 +21,21 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.post('/events', async (req, res) => {
+  try {
+    const { userId, entityType, entityId, action, metadata } = req.body;
+    await recommendationService.recordEvent({
+      user_id: userId ?? null,
+      entity_type: entityType,
+      entity_id: entityId,
+      action,
+      metadata,
+      created_at: new Date().toISOString(),
+    });
+    res.status(201).json({ status: 'ok' });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Failed to record event' });
+  }
+});
+
 export default router;

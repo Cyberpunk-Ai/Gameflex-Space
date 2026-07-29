@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { recommendationEventService } from '@/services/recommendations/RecommendationEventService';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/lib/auth-context';
@@ -133,6 +134,12 @@ export function StatusComments({ statusId, commentsCount, open = false }: Status
       setNewComment('');
       queryClient.invalidateQueries({ queryKey: ['user-statuses'] });
       queryClient.invalidateQueries({ queryKey: ['status-comments', statusId] });
+      void recommendationEventService.recordEvent({
+        userId: user?.id ?? null,
+        entityType: 'post',
+        entityId: statusId,
+        action: 'comment',
+      });
     },
     onError: (error: Error) => {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });

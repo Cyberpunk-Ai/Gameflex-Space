@@ -5,6 +5,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/lib/auth-context';
 import { Link } from '@/lib/router-compat';
 import { recommendationService } from '@/services/recommendations/RecommendationService';
+import { recommendationEventService } from '@/services/recommendations/RecommendationEventService';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from '@/components/ui/drawer';
@@ -121,6 +122,14 @@ export default function Reels() {
         if (isSaved) next.delete(reelId); else next.add(reelId);
         return next;
       });
+      if (!isSaved) {
+        void recommendationEventService.recordEvent({
+          userId: user?.id ?? null,
+          entityType: 'reel',
+          entityId: reelId,
+          action: 'save',
+        });
+      }
     },
   });
 
@@ -198,6 +207,14 @@ export default function Reels() {
           else next.add(reel.id);
           return next;
         });
+        if (!isLiked) {
+          void recommendationEventService.recordEvent({
+            userId: user?.id ?? null,
+            entityType: 'reel',
+            entityId: reel.id,
+            action: 'like',
+          });
+        }
       }
     });
   };
@@ -209,6 +226,12 @@ export default function Reels() {
     }
     setSelectedReelId(reel.id);
     setCommentsOpen(true);
+    void recommendationEventService.recordEvent({
+      userId: user?.id ?? null,
+      entityType: 'reel',
+      entityId: reel.id,
+      action: 'comment',
+    });
   };
 
   const handleShare = async (reelId: string) => {
@@ -221,6 +244,12 @@ export default function Reels() {
         // User cancelled or failed, fall through to clipboard
       }
     }
+    void recommendationEventService.recordEvent({
+      userId: user?.id ?? null,
+      entityType: 'reel',
+      entityId: reelId,
+      action: 'share',
+    });
     try {
       await navigator.clipboard.writeText(url);
       toast({ title: 'Link copied', description: 'Share this reel with your friends' });

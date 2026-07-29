@@ -2,7 +2,7 @@
 import { supabase } from './lib/supabase';
 
 export interface RecommendationEvent {
-  user_id: string;
+  user_id?: string | null;
   entity_type: string;
   entity_id: string;
   action: string;
@@ -80,6 +80,26 @@ export class RecommendationService {
       .slice(0, limit);
 
     return { items: ranked };
+  }
+
+  async recordEvent(event: RecommendationEvent): Promise<void> {
+    const payload = {
+      user_id: event.user_id ?? null,
+      entity_type: event.entity_type,
+      entity_id: event.entity_id,
+      action: event.action,
+      metadata: event.metadata ?? {},
+      created_at: event.created_at,
+    };
+
+    const { error } = await supabase
+      .from('recommendation_events')
+      .insert(payload)
+      .throwOnError(false);
+
+    if (error) {
+      console.warn('[RecommendationService] failed to record event', error.message || error);
+    }
   }
 
   async getCandidates(feedType: RecommendationRequest['feedType'], maxItems: number): Promise<RecommendationCandidate[]> {

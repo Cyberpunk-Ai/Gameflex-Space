@@ -3,6 +3,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from '@/lib/router-compat';
 import { supabase } from '@/integrations/supabase/client';
+import { recommendationEventService } from '@/services/recommendations/RecommendationEventService';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useAuth } from '@/lib/auth-context';
 import { recommendationService } from '@/services/recommendations/RecommendationService';
@@ -128,6 +129,12 @@ export function StoryViewer({
         qc.invalidateQueries({ queryKey: ['my-stories'] });
         qc.invalidateQueries({ queryKey: ['stories-grid'] });
         qc.invalidateQueries({ queryKey: ['stories-rail'] });
+        void recommendationEventService.recordEvent({
+          userId: user?.id ?? null,
+          entityType: 'story',
+          entityId: story.id,
+          action: 'story_view',
+        });
       })
       .catch(() => {});
   }, [story?.id]);
@@ -176,6 +183,16 @@ export function StoryViewer({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['story-likes', story?.id] });
       qc.invalidateQueries({ queryKey: ['my-stories'] });
+      if (user && !storyLikes?.isLiked) {
+        import('@/services/recommendations/RecommendationEventService')
+          .then((m) => m.recommendationEventService.recordEvent({
+            userId: user.id,
+            entityType: 'story',
+            entityId: story.id,
+            action: 'like',
+          }))
+          .catch(() => {});
+      }
     },
   });
 
