@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from '@/lib/router-compat';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/lib/auth-context';
+import { useRecommendations } from '@/features/recommendations/hooks/useRecommendations';
 import { SocialLayout } from '@/components/social/social-nav';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { FollowButton } from '@/components/social/follow-button';
@@ -27,21 +28,22 @@ export default function Friends() {
         ...(following ?? []).map((f) => f.following_id),
         ...(followers ?? []).map((f) => f.follower_id),
       ])];
-      if (!ids.length) return { following: [] as Profile[], followers: [] as Profile[], suggestions: [] as Profile[] };
+      if (!ids.length) return { following: [] as Profile[], followers: [] as Profile[] };
       const { data: profs } = await supabase.from('profiles').select('user_id, username, avatar_url').in('user_id', ids);
       const map = new Map<string, Profile>((profs ?? []).map((p) => [p.user_id, p as Profile]));
-      const { data: suggestions } = await supabase
-        .from('profiles')
-        .select('user_id, username, avatar_url')
-        .not('user_id', 'in', '(' + [user!.id, ...ids].join(',') + ')')
-        .limit(6);
       return {
         following: (following ?? []).map((f) => map.get(f.following_id)).filter((p): p is Profile => Boolean(p)),
         followers: (followers ?? []).map((f) => map.get(f.follower_id)).filter((p): p is Profile => Boolean(p)),
-        suggestions: (suggestions ?? []) as Profile[],
       };
     },
   });
+
+  const recommendations = useRecommendations('friends', user?.id, 6);
+  const suggestionIds = new Set([user?.id, ...(data?.following ?? []).map((p) => p.user_id), ...(data?.followers ?? []).map((p) => p.user_id)]);
+  const recItems = (recommendations.data as any)?.items ?? [];
+  const suggestions: Profile[] = recItems
+    .map((item: any) => item.payload as Profile)
+    .filter((p: Profile) => !suggestionIds.has(p.user_id));
 
   if (!user) return <SocialLayout title="Friends"><p className="text-center text-muted-foreground py-16">Sign in to manage your friends.</p></SocialLayout>;
 
@@ -54,7 +56,7 @@ export default function Friends() {
       <div className="rounded-xl border border-border/50 bg-card p-4">
         <h2 className="font-display font-bold text-sm mb-3 flex items-center gap-2"><Users className="h-4 w-4" />Suggested players</h2>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          {(data?.suggestions ?? []).map((p) => (
+          {suggestions.map((p) => (
             <div key={p.user_id} className="flex items-center gap-2 p-2 rounded bg-secondary/50">
               <Link to={`/player/${p.user_id}`}><Avatar className="h-8 w-8"><AvatarImage src={p.avatar_url ?? ''} /><AvatarFallback>{p.username?.[0]?.toUpperCase()}</AvatarFallback></Avatar></Link>
               <Link to={`/player/${p.user_id}`} className="text-sm font-medium truncate flex-1">{p.username}</Link>

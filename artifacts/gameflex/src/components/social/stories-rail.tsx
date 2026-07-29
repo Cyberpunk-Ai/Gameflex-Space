@@ -5,6 +5,7 @@ import { Link, useNavigate } from '@/lib/router-compat';
 import { supabase } from '@/integrations/supabase/client';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useAuth } from '@/lib/auth-context';
+import { recommendationService } from '@/services/recommendations/RecommendationService';
 import { Plus, X, Pause, Send, Heart, MessageCircle, ChevronDown } from 'lucide-react';
 import { subHours, formatDistanceToNow } from 'date-fns';
 import { cn } from '@/lib/utils';
@@ -612,41 +613,71 @@ export function StoriesRail() {
   const [viewingGroupIndex, setViewingGroupIndex] = useState(0);
 
   const { data: userGroups = [], isLoading } = useQuery({
-    queryKey: ['stories-rail'],
+    queryKey: ['stories-rail', user?.id],
     staleTime: 60_000,
     queryFn: async () => {
-      const cutoff = subHours(new Date(), 24).toISOString();
-      const { data } = await supabase
-        .from('user_statuses')
-        .select('id, user_id, media_url, media_type, content, created_at, views_count, likes_count, comments_count')
-        .gte('created_at', cutoff)
-        .order('created_at', { ascending: true });
+      try {
+        const { items } = await recommendationService.fetchRecommendations('stories', user?.id, 24);
+        const stories = items.map((item: any) => item.payload);
+        if (!stories.length) throw new Error('No story recommendations');
 
-      if (!data?.length) return [];
+        const ids = [...new Set(stories.map((s: any) => s.user_id))];
+        const { data: profiles } = await supabase
+          .from('profiles').select('user_id, username, avatar_url').in('user_id', ids);
+        const profileMap = new Map(profiles?.map((p: any) => [p.user_id, p]) ?? []);
 
-      const ids = [...new Set(data.map((s: any) => s.user_id))];
-      const { data: profiles } = await supabase
-        .from('profiles').select('user_id, username, avatar_url').in('user_id', ids);
-      const profileMap = new Map(profiles?.map((p: any) => [p.user_id, p]) ?? []);
+        const grouped = new Map<string, any[]>();
+        for (const s of stories) {
+          const arr = grouped.get(s.user_id) || [];
+          arr.push(s);
+          grouped.set(s.user_id, arr);
+        }
 
-      const grouped = new Map<string, any[]>();
-      for (const s of data) {
-        const arr = grouped.get(s.user_id) || [];
-        arr.push(s);
-        grouped.set(s.user_id, arr);
+        return Array.from(grouped.entries())
+          .map(([user_id, stories]) => ({
+            user_id,
+            profile: profileMap.get(user_id) || { username: 'Unknown' },
+            stories,
+          }))
+          .sort((a, b) => {
+            const aT = new Date(a.stories[a.stories.length - 1].created_at).getTime();
+            const bT = new Date(b.stories[b.stories.length - 1].created_at).getTime();
+            return bT - aT;
+          });
+      } catch {
+        const cutoff = subHours(new Date(), 24).toISOString();
+        const { data } = await supabase
+          .from('user_statuses')
+          .select('id, user_id, media_url, media_type, content, created_at, views_count, likes_count, comments_count')
+          .gte('created_at', cutoff)
+          .order('created_at', { ascending: true });
+
+        if (!data?.length) return [];
+
+        const ids = [...new Set(data.map((s: any) => s.user_id))];
+        const { data: profiles } = await supabase
+          .from('profiles').select('user_id, username, avatar_url').in('user_id', ids);
+        const profileMap = new Map(profiles?.map((p: any) => [p.user_id, p]) ?? []);
+
+        const grouped = new Map<string, any[]>();
+        for (const s of data) {
+          const arr = grouped.get(s.user_id) || [];
+          arr.push(s);
+          grouped.set(s.user_id, arr);
+        }
+
+        return Array.from(grouped.entries())
+          .map(([user_id, stories]) => ({
+            user_id,
+            profile: profileMap.get(user_id) || { username: 'Unknown' },
+            stories,
+          }))
+          .sort((a, b) => {
+            const aT = new Date(a.stories[a.stories.length - 1].created_at).getTime();
+            const bT = new Date(b.stories[b.stories.length - 1].created_at).getTime();
+            return bT - aT;
+          });
       }
-
-      return Array.from(grouped.entries())
-        .map(([user_id, stories]) => ({
-          user_id,
-          profile: profileMap.get(user_id) || { username: 'Unknown' },
-          stories,
-        }))
-        .sort((a, b) => {
-          const aT = new Date(a.stories[a.stories.length - 1].created_at).getTime();
-          const bT = new Date(b.stories[b.stories.length - 1].created_at).getTime();
-          return bT - aT;
-        });
     },
   });
 

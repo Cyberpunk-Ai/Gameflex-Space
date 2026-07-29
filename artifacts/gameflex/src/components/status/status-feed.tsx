@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@/lib/router-compat';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/lib/auth-context';
+import { recommendationService } from '@/services/recommendations/RecommendationService';
 import { formatDistanceToNow } from 'date-fns';
 import {
   Heart, MessageCircle, Send, Bookmark, Trash2, TrendingUp,
@@ -232,6 +233,37 @@ export function StatusFeed({ mode = 'foryou' }: { mode?: 'foryou' | 'trending' |
   const { data: rawStatuses = [], isLoading } = useQuery({
     queryKey: ['user-statuses', mode, user?.id ?? 'anon', trendingKey],
     queryFn: async () => {
+      if (mode === 'foryou') {
+        try {
+          const { items } = await recommendationService.fetchRecommendations('home', user?.id, 50);
+          const data = items.map((item: any) => ({ ...item.payload, score: item.score }));
+          const userIds = [...new Set(data.map((s: any) => s.user_id))];
+
+          const [{ data: profiles }, likesRes, savesRes, followsRes] = await Promise.all([
+            supabase.from('profiles').select('user_id, username, avatar_url').in('user_id', userIds),
+            user ? supabase.from('status_likes').select('status_id').eq('user_id', user.id) : Promise.resolve({ data: [] }),
+            user ? supabase.from('status_saves').select('status_id').eq('user_id', user.id).then(r => r).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+            user ? supabase.from('user_follows').select('following_id').eq('follower_id', user.id) : Promise.resolve({ data: [] }),
+          ]);
+
+          const profileMap = new Map(profiles?.map((p: any) => [p.user_id, p]) ?? []);
+          const userLikes = likesRes.data?.map((l: any) => l.status_id) ?? [];
+          const userSaves = savesRes.data?.map((s: any) => s.status_id) ?? [];
+          const userFollows = followsRes.data?.map((f: any) => f.following_id) ?? [];
+
+          if (userSaves.length) setSavedPosts(new Set(userSaves));
+
+          return data.map((s: any) => ({
+            ...s,
+            profile: profileMap.get(s.user_id),
+            isLiked: userLikes.includes(s.id),
+            isFollowing: userFollows.includes(s.user_id),
+          }));
+        } catch {
+          // Fallback to standard feed if recommendation service is unavailable.
+        }
+      }
+
       let query = supabase.from('user_statuses').select('*');
 
       if (mode === 'following' && user) {
@@ -265,7 +297,6 @@ export function StatusFeed({ mode = 'foryou' }: { mode?: 'foryou' | 'trending' |
         userLikes = likesRes.data?.map((l: any) => l.status_id) ?? [];
         userSaves = savesRes.data?.map((s: any) => s.status_id) ?? [];
         userFollows = followsRes.data?.map((f: any) => f.following_id) ?? [];
-        // Sync DB saves into local state
         if (userSaves.length) setSavedPosts(new Set(userSaves));
       }
 

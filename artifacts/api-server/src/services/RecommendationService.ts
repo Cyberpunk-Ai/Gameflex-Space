@@ -1,6 +1,5 @@
 // @ts-nocheck
-import { supabase } from '@/integrations/supabase/client';
-import type { Database } from '@/integrations/supabase/types';
+import { supabase } from './lib/supabase';
 
 export interface RecommendationEvent {
   user_id: string;
@@ -165,15 +164,17 @@ export class RecommendationService {
         .select('*')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
-        .limit(200),
+        .limit(200)
+        .throwOnError(false),
       supabase
         .from('user_follows')
         .select('following_id')
-        .eq('follower_id', userId),
+        .eq('follower_id', userId)
+        .throwOnError(false),
     ]);
 
-    const events = eventsRes.data ?? [];
-    const follows = followsRes.data?.map((f: any) => f.following_id) ?? [];
+    const events = eventsRes.error ? [] : eventsRes.data ?? [];
+    const follows = followsRes.error ? [] : followsRes.data?.map((f: any) => f.following_id) ?? [];
     return { events, follows };
   }
 

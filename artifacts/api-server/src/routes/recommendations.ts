@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { recommendationService } from '@/services/RecommendationService';
+import { recommendationService } from '../services/RecommendationService';
 
 const router = Router();
 

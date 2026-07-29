@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/lib/auth-context';
 import { Link } from '@/lib/router-compat';
+import { recommendationService } from '@/services/recommendations/RecommendationService';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from '@/components/ui/drawer';
@@ -30,19 +31,28 @@ export default function Reels() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const { data: reels = [] } = useQuery({
-    queryKey: ['reels'],
+    queryKey: ['reels', user?.id],
     queryFn: async () => {
-      const { data } = await supabase
-        .from('user_statuses')
-        .select('*')
-        .eq('media_type', 'video')
-        .order('created_at', { ascending: false })
-        .limit(50);
-      if (!data) return [];
-      const ids = [...new Set(data.map((s: any) => s.user_id))];
-      const { data: profiles } = await supabase.from('profiles').select('user_id, username, avatar_url').in('user_id', ids);
-      const map = new Map(profiles?.map((p: any) => [p.user_id, p]) ?? []);
-      return data.map((r: any) => ({ ...r, profile: map.get(r.user_id) }));
+      try {
+        const { items } = await recommendationService.fetchRecommendations('reels', user?.id, 50);
+        const data = items.map((item: any) => item.payload);
+        const ids = [...new Set(data.map((s: any) => s.user_id))];
+        const { data: profiles } = await supabase.from('profiles').select('user_id, username, avatar_url').in('user_id', ids);
+        const map = new Map(profiles?.map((p: any) => [p.user_id, p]) ?? []);
+        return data.map((r: any) => ({ ...r, profile: map.get(r.user_id) }));
+      } catch {
+        const { data } = await supabase
+          .from('user_statuses')
+          .select('*')
+          .eq('media_type', 'video')
+          .order('created_at', { ascending: false })
+          .limit(50);
+        if (!data) return [];
+        const ids = [...new Set(data.map((s: any) => s.user_id))];
+        const { data: profiles } = await supabase.from('profiles').select('user_id, username, avatar_url').in('user_id', ids);
+        const map = new Map(profiles?.map((p: any) => [p.user_id, p]) ?? []);
+        return data.map((r: any) => ({ ...r, profile: map.get(r.user_id) }));
+      }
     },
   });
 

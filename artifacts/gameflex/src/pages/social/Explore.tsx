@@ -6,20 +6,26 @@ import { SocialLayout } from '@/components/social/social-nav';
 import { Card } from '@/components/ui/card';
 import { Heart, Eye, MessageCircle } from 'lucide-react';
 import { subDays } from 'date-fns';
+import { recommendationService } from '@/services/recommendations/RecommendationService';
 
 export default function Explore() {
   const { data: posts = [] } = useQuery({
     queryKey: ['explore-posts'],
     queryFn: async () => {
-      const weekAgo = subDays(new Date(), 7).toISOString();
-      const { data } = await supabase
-        .from('user_statuses')
-        .select('*')
-        .gte('created_at', weekAgo)
-        .not('media_url', 'is', null)
-        .order('likes_count', { ascending: false })
-        .limit(24);
-      return data ?? [];
+      try {
+        const { items } = await recommendationService.fetchRecommendations('explore', undefined, 24);
+        return items.map((item: any) => item.payload);
+      } catch {
+        const weekAgo = subDays(new Date(), 7).toISOString();
+        const { data } = await supabase
+          .from('user_statuses')
+          .select('*')
+          .gte('created_at', weekAgo)
+          .not('media_url', 'is', null)
+          .order('likes_count', { ascending: false })
+          .limit(24);
+        return data ?? [];
+      }
     },
   });
 
