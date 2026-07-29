@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@/lib/router-compat';
 import { supabase } from '@/integrations/supabase/client';
@@ -285,8 +285,8 @@ function EditDialog({
   const [text, setText] = useState('');
   const [gid, setGid] = useState('neon');
 
-  // sync when story changes
-  useMemo(() => {
+  // sync when story changes — useEffect not useMemo (no side-effects in render)
+  useEffect(() => {
     if (!story) return;
     setText(story.content ?? '');
     setGid(

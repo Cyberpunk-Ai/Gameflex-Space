@@ -5,7 +5,7 @@ import { Link, useNavigate } from '@/lib/router-compat';
 import { supabase } from '@/integrations/supabase/client';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useAuth } from '@/lib/auth-context';
-import { Plus, X, Pause, Send, Heart, MessageCircle, ChevronUp, ChevronDown } from 'lucide-react';
+import { Plus, X, Pause, Send, Heart, MessageCircle, ChevronDown } from 'lucide-react';
 import { subHours, formatDistanceToNow } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -39,6 +39,8 @@ export function StoryViewer({
   const [reactionAnim, setReactionAnim] = useState<string | null>(null);
   const [likeAnim, setLikeAnim] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Track which story IDs we've already recorded a view for in this session
+  const viewedRef = useRef<Set<string>>(new Set());
 
   const currentGroup = userGroups[groupIndex];
   const story = currentGroup?.stories[storyIndex];
@@ -49,7 +51,8 @@ export function StoryViewer({
   // ── comments for current story ──
   const { data: comments = [], isLoading: commentsLoading } = useQuery({
     queryKey: ['story-comments', story?.id],
-    enabled: showComments && !!story,
+    enabled: !!story,
+    staleTime: 0,
     queryFn: async () => {
       const { data } = await supabase
         .from('status_comments')
@@ -75,7 +78,7 @@ export function StoryViewer({
   const { data: storyLikes } = useQuery({
     queryKey: ['story-likes', story?.id, user?.id],
     enabled: !!story,
-    staleTime: 30_000,
+    staleTime: 0,
     queryFn: async () => {
       const countRes = await supabase
         .from('status_likes').select('id', { count: 'exact', head: true }).eq('status_id', story.id);
@@ -89,13 +92,62 @@ export function StoryViewer({
     },
   });
 
+  // ── record view once per story per session ──
+  useEffect(() => {
+    if (!story?.id || viewedRef.current.has(story.id)) return;
+    viewedRef.current.add(story.id);
+    // Increment views_count (fire-and-forget, fail silently)
+    supabase
+      .from('user_statuses')
+      .update({ views_count: (story.views_count ?? 0) + 1 })
+      .eq('id', story.id)
+      .then(() => {
+        qc.invalidateQueries({ queryKey: ['my-stories'] });
+        qc.invalidateQueries({ queryKey: ['stories-grid'] });
+        qc.invalidateQueries({ queryKey: ['stories-rail'] });
+      })
+      .catch(() => {});
+  }, [story?.id]);
+
+  // ── real-time subscription for current story's likes + comments ──
+  useEffect(() => {
+    if (!story?.id) return;
+    const channelName = `story-engagement-${story.id}`;
+    const channel = supabase.channel(channelName)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'status_likes',
+        filter: `status_id=eq.${story.id}`,
+      }, () => {
+        qc.invalidateQueries({ queryKey: ['story-likes', story.id, user?.id] });
+        qc.invalidateQueries({ queryKey: ['my-stories'] });
+      })
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'status_comments',
+        filter: `status_id=eq.${story.id}`,
+      }, () => {
+        qc.invalidateQueries({ queryKey: ['story-comments', story.id] });
+        qc.invalidateQueries({ queryKey: ['my-stories'] });
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [story?.id]);
+
   const likeMut = useMutation({
     mutationFn: async () => {
       if (!user) throw new Error('Sign in to react');
       if (storyLikes?.isLiked) {
-        await supabase.from('status_likes').delete().eq('status_id', story.id).eq('user_id', user.id);
+        const { error } = await supabase.from('status_likes').delete()
+          .eq('status_id', story.id).eq('user_id', user.id);
+        if (error) throw error;
       } else {
-        await supabase.from('status_likes').insert({ status_id: story.id, user_id: user.id });
+        const { error } = await supabase.from('status_likes')
+          .insert({ status_id: story.id, user_id: user.id });
+        if (error) throw error;
       }
     },
     onSuccess: () => {
@@ -107,9 +159,19 @@ export function StoryViewer({
   const replyMut = useMutation({
     mutationFn: async (content: string) => {
       if (!user) throw new Error('Sign in to comment');
-      const enc = await encryptMessage(content);
+      let storedContent = content;
+      let isEncrypted = false;
+      try {
+        storedContent = await encryptMessage(content);
+        isEncrypted = true;
+      } catch {
+        // fall back to plain text if encryption fails
+      }
       const { error } = await supabase.from('status_comments').insert({
-        status_id: story.id, user_id: user.id, content: enc, is_encrypted: true,
+        status_id: story.id,
+        user_id: user.id,
+        content: storedContent,
+        is_encrypted: isEncrypted,
       });
       if (error) throw error;
     },
@@ -120,24 +182,34 @@ export function StoryViewer({
     },
   });
 
-  const handleReact = (emoji: string) => {
+  const handleReact = (e: React.MouseEvent, emoji: string) => {
+    e.stopPropagation();
     setReactionAnim(emoji);
     setTimeout(() => setReactionAnim(null), 900);
     if (!storyLikes?.isLiked) {
       likeMut.mutate();
     }
-    // also send emoji as comment
+    // also send emoji as a comment
     if (user) {
       supabase.from('status_comments').insert({
         status_id: story.id, user_id: user.id, content: emoji, is_encrypted: false,
-      }).then(() => qc.invalidateQueries({ queryKey: ['story-comments', story?.id] }));
+      }).then(() => {
+        qc.invalidateQueries({ queryKey: ['story-comments', story?.id] });
+        qc.invalidateQueries({ queryKey: ['my-stories'] });
+      });
     }
   };
 
-  const handleLike = () => {
+  const handleLike = (e: React.MouseEvent) => {
+    e.stopPropagation();
     setLikeAnim(true);
     setTimeout(() => setLikeAnim(false), 700);
     likeMut.mutate();
+  };
+
+  const handleToggleComments = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setShowComments(true);
   };
 
   const DURATION = 6000;
@@ -169,9 +241,19 @@ export function StoryViewer({
     setProgress(0); setShowComments(false);
   }, [currentGroup, storyIndex, groupIndex, userGroups]);
 
+  // ── Effect 1: reset progress only when story changes ──
   useEffect(() => {
-    if (!story || isPaused) { if (intervalRef.current) clearInterval(intervalRef.current); return; }
     setProgress(0);
+    setReplyText('');
+    setShowComments(false);
+  }, [story?.id]);
+
+  // ── Effect 2: run/pause timer — does NOT reset progress on pause/resume ──
+  useEffect(() => {
+    if (!story || isPaused) {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      return;
+    }
     if (intervalRef.current) clearInterval(intervalRef.current);
     intervalRef.current = setInterval(() => {
       setProgress(p => {
@@ -181,14 +263,15 @@ export function StoryViewer({
       });
     }, TICK);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [groupIndex, storyIndex, story, isPaused, goNext]);
+  }, [story?.id, isPaused, goNext]);
 
+  // ── keyboard shortcuts ──
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { if (showComments) { setShowComments(false); return; } onClose(); }
       if (e.key === 'ArrowRight' && !showComments) goNext();
       if (e.key === 'ArrowLeft' && !showComments) goPrev();
-      if (e.key === ' ') setIsPaused(p => !p);
+      if (e.key === ' ') { e.preventDefault(); setIsPaused(p => !p); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
@@ -198,6 +281,8 @@ export function StoryViewer({
   const isVideo = isVideoStory(story);
   const isLiked = storyLikes?.isLiked ?? false;
   const likeCount = storyLikes?.count ?? story.likes_count ?? 0;
+  // Use live comment count when loaded, fall back to stale story field
+  const commentCount = comments.length > 0 ? comments.length : (story.comments_count ?? 0);
 
   return (
     <div className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center">
@@ -247,8 +332,8 @@ export function StoryViewer({
           )}
         </AnimatePresence>
 
-        {/* Top: progress + header */}
-        <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/80 via-black/40 to-transparent pt-4 pb-16 px-4 z-10 pointer-events-none">
+        {/* Top: progress + header — z-20 so it's above tap zones (z-[15]) */}
+        <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/80 via-black/40 to-transparent pt-4 pb-16 px-4 z-20 pointer-events-none">
           <div className="flex gap-1.5 mb-4">
             {currentGroup.stories.map((s: any, i: number) => (
               <div key={s.id} className="flex-1 h-1 rounded-full bg-white/20 overflow-hidden backdrop-blur-md">
@@ -275,7 +360,7 @@ export function StoryViewer({
                 </div>
               </div>
             </div>
-            <button onClick={onClose}
+            <button onClick={(e) => { e.stopPropagation(); onClose(); }}
               className="h-10 w-10 flex items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60 backdrop-blur-md transition-all active:scale-95"
               aria-label="Close">
               <X className="h-5 w-5" />
@@ -285,148 +370,22 @@ export function StoryViewer({
 
         {/* Caption */}
         {story.content && story.media_url && (
-          <div className="absolute bottom-36 left-0 right-0 bg-gradient-to-t from-black/80 via-black/50 to-transparent px-6 pb-6 pt-16 z-10 pointer-events-none">
+          <div className="absolute bottom-36 left-0 right-0 bg-gradient-to-t from-black/80 via-black/50 to-transparent px-6 pb-6 pt-16 z-20 pointer-events-none">
             <p className="text-white text-base font-medium leading-relaxed drop-shadow-lg">{story.content}</p>
           </div>
         )}
 
-        {/* ── Bottom engagement area ── */}
-        {!showComments ? (
-          <div className="absolute bottom-0 left-0 right-0 z-20">
-            {/* Reaction row */}
-            <div className="flex items-center justify-between px-4 pb-2 pt-2">
-              <div className="flex items-center gap-2">
-                {REACTIONS.map(emoji => (
-                  <button key={emoji} onClick={() => handleReact(emoji)}
-                    className="text-2xl hover:scale-125 active:scale-95 transition-transform drop-shadow-lg">
-                    {emoji}
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center gap-3">
-                {/* like count */}
-                <button onClick={handleLike} className="flex items-center gap-1.5 text-white active:scale-90 transition-transform">
-                  <Heart className={cn('h-6 w-6 transition-colors', isLiked ? 'fill-rose-400 text-rose-400' : 'text-white')} />
-                  {likeCount > 0 && <span className="text-xs font-bold text-white/90">{likeCount}</span>}
-                </button>
-                {/* comments toggle */}
-                <button onClick={() => setShowComments(true)}
-                  className="flex items-center gap-1.5 text-white active:scale-90 transition-transform">
-                  <MessageCircle className="h-6 w-6 text-white" />
-                  {(story.comments_count ?? 0) > 0 && (
-                    <span className="text-xs font-bold text-white/90">{story.comments_count}</span>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            {/* Reply input */}
-            <div className="px-4 pb-6 pt-1 bg-gradient-to-t from-black/80 to-transparent">
-              <div className="flex items-center gap-2">
-                <input type="text" value={replyText} onChange={e => setReplyText(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && replyText.trim()) { e.preventDefault(); replyMut.mutate(replyText.trim()); } }}
-                  placeholder={user ? `Reply to ${currentGroup.profile?.username}…` : 'Sign in to reply…'}
-                  disabled={!user}
-                  className="flex-1 bg-black/40 border border-white/20 rounded-full py-3 px-5 text-white placeholder:text-white/50 text-sm focus:outline-none focus:border-white/50 backdrop-blur-md"
-                />
-                {replyText.trim() && (
-                  <button onClick={() => replyMut.mutate(replyText.trim())} disabled={replyMut.isPending}
-                    className="h-10 w-10 rounded-full bg-primary flex items-center justify-center hover:bg-primary/90 disabled:opacity-50 transition-colors shrink-0">
-                    <Send className="h-4 w-4 text-primary-foreground" />
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* ── Comments panel ── */
-          <motion.div
-            initial={{ y: '100%' }}
-            animate={{ y: 0 }}
-            exit={{ y: '100%' }}
-            transition={{ type: 'spring', damping: 28, stiffness: 260 }}
-            className="absolute bottom-0 left-0 right-0 z-30 bg-zinc-900/95 backdrop-blur-xl rounded-t-3xl border-t border-white/10"
-          >
-            {/* handle */}
-            <div className="flex items-center justify-between px-5 py-3 border-b border-white/10">
-              <p className="text-white font-bold text-sm">
-                Comments {(story.comments_count ?? 0) > 0 && <span className="text-white/50 font-normal">({story.comments_count})</span>}
-              </p>
-              <button onClick={() => setShowComments(false)}
-                className="h-8 w-8 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors">
-                <ChevronDown className="h-4 w-4 text-white" />
-              </button>
-            </div>
-
-            {/* comment list */}
-            <div className="overflow-y-auto max-h-60 px-4 py-3 space-y-3">
-              {commentsLoading ? (
-                <p className="text-white/50 text-sm text-center py-4">Loading…</p>
-              ) : comments.length === 0 ? (
-                <p className="text-white/40 text-sm text-center py-4">No comments yet. Be the first!</p>
-              ) : (
-                comments.map((c: any) => (
-                  <div key={c.id} className="flex items-start gap-3">
-                    <Avatar className="h-7 w-7 shrink-0 border border-white/10">
-                      <AvatarImage src={c.profile?.avatar_url} />
-                      <AvatarFallback className="text-[9px] bg-secondary text-foreground font-bold">
-                        {c.profile?.username?.[0]?.toUpperCase() ?? '?'}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-baseline gap-2">
-                        <span className="text-white text-xs font-bold">{c.profile?.username ?? 'User'}</span>
-                        <span className="text-white/40 text-[10px]">
-                          {formatDistanceToNow(new Date(c.created_at), { addSuffix: true })}
-                        </span>
-                      </div>
-                      <p className="text-white/80 text-sm mt-0.5 break-words">{c.displayText}</p>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            {/* comment input */}
-            <div className="px-4 pb-6 pt-2 border-t border-white/10">
-              <div className="flex items-center gap-2">
-                <input type="text" value={replyText} onChange={e => setReplyText(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && replyText.trim()) { e.preventDefault(); replyMut.mutate(replyText.trim()); } }}
-                  placeholder={user ? 'Add a comment…' : 'Sign in to comment…'}
-                  disabled={!user || replyMut.isPending}
-                  className="flex-1 bg-white/10 border border-white/10 rounded-full py-2.5 px-4 text-white placeholder:text-white/40 text-sm focus:outline-none focus:border-white/30"
-                />
-                {replyText.trim() && (
-                  <button onClick={() => replyMut.mutate(replyText.trim())} disabled={replyMut.isPending}
-                    className="h-9 w-9 rounded-full bg-primary flex items-center justify-center hover:bg-primary/90 disabled:opacity-50 shrink-0 transition-colors">
-                    <Send className="h-4 w-4 text-primary-foreground" />
-                  </button>
-                )}
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {/* pause indicator */}
-        {isPaused && !showComments && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
-            <div className="bg-black/40 rounded-full p-4 backdrop-blur-sm">
-              <Pause className="h-10 w-10 text-white" />
-            </div>
-          </div>
-        )}
-
-        {/* tap zones (only when comments closed) */}
+        {/* ── Tap zones — z-[15] so engagement buttons (z-20) always win ── */}
         {!showComments && (
           <>
-            <div className="absolute inset-y-0 left-0 w-1/3 z-20 cursor-pointer"
+            <div className="absolute inset-y-0 left-0 w-1/3 z-[15] cursor-pointer"
               onClick={goPrev}
               onPointerDown={() => setIsPaused(true)}
               onPointerUp={() => setIsPaused(false)}
               onPointerLeave={() => setIsPaused(false)}>
               <div className="absolute inset-0 bg-gradient-radial from-white/10 to-transparent opacity-0 active:opacity-100 transition-opacity" />
             </div>
-            <div className="absolute inset-y-0 right-0 w-2/3 z-20 cursor-pointer"
+            <div className="absolute inset-y-0 right-0 w-2/3 z-[15] cursor-pointer"
               onClick={goNext}
               onPointerDown={() => setIsPaused(true)}
               onPointerUp={() => setIsPaused(false)}
@@ -434,6 +393,159 @@ export function StoryViewer({
               <div className="absolute inset-0 bg-gradient-radial from-white/10 to-transparent opacity-0 active:opacity-100 transition-opacity" />
             </div>
           </>
+        )}
+
+        {/* ── Bottom engagement area — z-20, above tap zones ── */}
+        {!showComments && (
+          <div className="absolute bottom-0 left-0 right-0 z-20">
+            {/* Reaction row */}
+            <div className="flex items-center justify-between px-4 pb-2 pt-2">
+              <div className="flex items-center gap-2">
+                {REACTIONS.map(emoji => (
+                  <button key={emoji} onClick={(e) => handleReact(e, emoji)}
+                    className="text-2xl hover:scale-125 active:scale-95 transition-transform drop-shadow-lg">
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-3">
+                {/* like */}
+                <button onClick={handleLike} className="flex items-center gap-1.5 text-white active:scale-90 transition-transform">
+                  <Heart className={cn('h-6 w-6 transition-colors', isLiked ? 'fill-rose-400 text-rose-400' : 'text-white')} />
+                  {likeCount > 0 && <span className="text-xs font-bold text-white/90">{likeCount}</span>}
+                </button>
+                {/* comments toggle */}
+                <button onClick={handleToggleComments}
+                  className="flex items-center gap-1.5 text-white active:scale-90 transition-transform">
+                  <MessageCircle className="h-6 w-6 text-white" />
+                  {commentCount > 0 && (
+                    <span className="text-xs font-bold text-white/90">{commentCount}</span>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Reply input */}
+            <div className="px-4 pb-6 pt-1 bg-gradient-to-t from-black/80 to-transparent">
+              <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                <input
+                  type="text"
+                  value={replyText}
+                  onChange={e => setReplyText(e.target.value)}
+                  onFocus={() => setIsPaused(true)}
+                  onBlur={() => setIsPaused(false)}
+                  onKeyDown={e => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter' && replyText.trim() && !replyMut.isPending) {
+                      e.preventDefault();
+                      replyMut.mutate(replyText.trim());
+                    }
+                  }}
+                  placeholder={user ? `Reply to ${currentGroup.profile?.username}…` : 'Sign in to reply…'}
+                  disabled={!user}
+                  className="flex-1 bg-black/40 border border-white/20 rounded-full py-3 px-5 text-white placeholder:text-white/50 text-sm focus:outline-none focus:border-white/50 backdrop-blur-md"
+                />
+                {replyText.trim() && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); replyMut.mutate(replyText.trim()); }}
+                    disabled={replyMut.isPending}
+                    className="h-10 w-10 rounded-full bg-primary flex items-center justify-center hover:bg-primary/90 disabled:opacity-50 transition-colors shrink-0">
+                    <Send className="h-4 w-4 text-primary-foreground" />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Comments panel — z-30 ── */}
+        <AnimatePresence>
+          {showComments && (
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 260 }}
+              className="absolute bottom-0 left-0 right-0 z-30 bg-zinc-900/95 backdrop-blur-xl rounded-t-3xl border-t border-white/10"
+            >
+              {/* handle */}
+              <div className="flex items-center justify-between px-5 py-3 border-b border-white/10">
+                <p className="text-white font-bold text-sm">
+                  Comments{commentCount > 0 && <span className="text-white/50 font-normal ml-1">({commentCount})</span>}
+                </p>
+                <button onClick={() => setShowComments(false)}
+                  className="h-8 w-8 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors">
+                  <ChevronDown className="h-4 w-4 text-white" />
+                </button>
+              </div>
+
+              {/* comment list */}
+              <div className="overflow-y-auto max-h-60 px-4 py-3 space-y-3">
+                {commentsLoading ? (
+                  <p className="text-white/50 text-sm text-center py-4">Loading…</p>
+                ) : comments.length === 0 ? (
+                  <p className="text-white/40 text-sm text-center py-4">No comments yet. Be the first!</p>
+                ) : (
+                  comments.map((c: any) => (
+                    <div key={c.id} className="flex items-start gap-3">
+                      <Avatar className="h-7 w-7 shrink-0 border border-white/10">
+                        <AvatarImage src={c.profile?.avatar_url} />
+                        <AvatarFallback className="text-[9px] bg-secondary text-foreground font-bold">
+                          {c.profile?.username?.[0]?.toUpperCase() ?? '?'}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-white text-xs font-bold">{c.profile?.username ?? 'User'}</span>
+                          <span className="text-white/40 text-[10px]">
+                            {formatDistanceToNow(new Date(c.created_at), { addSuffix: true })}
+                          </span>
+                        </div>
+                        <p className="text-white/80 text-sm mt-0.5 break-words">{c.displayText}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* comment input */}
+              <div className="px-4 pb-6 pt-2 border-t border-white/10">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={replyText}
+                    onChange={e => setReplyText(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && replyText.trim() && !replyMut.isPending) {
+                        e.preventDefault();
+                        replyMut.mutate(replyText.trim());
+                      }
+                    }}
+                    placeholder={user ? 'Add a comment…' : 'Sign in to comment…'}
+                    disabled={!user || replyMut.isPending}
+                    className="flex-1 bg-white/10 border border-white/10 rounded-full py-2.5 px-4 text-white placeholder:text-white/40 text-sm focus:outline-none focus:border-white/30"
+                  />
+                  {replyText.trim() && (
+                    <button
+                      onClick={() => replyMut.mutate(replyText.trim())}
+                      disabled={replyMut.isPending}
+                      className="h-9 w-9 rounded-full bg-primary flex items-center justify-center hover:bg-primary/90 disabled:opacity-50 shrink-0 transition-colors">
+                      <Send className="h-4 w-4 text-primary-foreground" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* pause indicator */}
+        {isPaused && !showComments && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-[18]">
+            <div className="bg-black/40 rounded-full p-4 backdrop-blur-sm">
+              <Pause className="h-10 w-10 text-white" />
+            </div>
+          </div>
         )}
       </div>
     </div>
@@ -455,7 +567,7 @@ export function StoriesRail() {
       const cutoff = subHours(new Date(), 24).toISOString();
       const { data } = await supabase
         .from('user_statuses')
-        .select('id, user_id, media_url, media_type, content, created_at')
+        .select('id, user_id, media_url, media_type, content, created_at, views_count, likes_count, comments_count')
         .gte('created_at', cutoff)
         .order('created_at', { ascending: true });
 
